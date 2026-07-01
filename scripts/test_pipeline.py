@@ -36,7 +36,6 @@ from run_snies_posgrado import (
     merge_division,
     acumular,
     _guardar,
-    NOVEDADES_DIR,
 )
 
 # ── Archivos a usar para la prueba ────────────────────────────────────────────
@@ -44,12 +43,15 @@ HOY_FILE     = ROOT / "Programas" / "Programas postgrado 27-08-25.xlsx"
 ANTERIOR_FILE = ROOT / "Programas" / "Programas postgrado 20-08-25.xlsx"
 TODAY = date(2025, 8, 27)
 
+# Salida aislada: nunca escribir en data/novedades/ (carpeta de producción)
+TEST_OUTPUT_DIR = ROOT / "tmp" / "test_pipeline_output"
+
 def main():
     log.info("╔══ TEST pipeline posgrado (sin descarga) ══╗")
     log.info(f"HOY      → {HOY_FILE.name}")
     log.info(f"ANTERIOR → {ANTERIOR_FILE.name}")
 
-    NOVEDADES_DIR.mkdir(parents=True, exist_ok=True)
+    TEST_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
     # 1. Categorización
     cat = load_categorizacion()
@@ -70,10 +72,10 @@ def main():
     inactivos = merge_division(inactivos, cat)
     modificados = merge_division(modificados, cat)
 
-    # 5. Acumular y guardar
-    _guardar(acumular(NOVEDADES_DIR / "Nuevos posgrado.xlsx",     nuevos),     NOVEDADES_DIR / "Nuevos posgrado.xlsx")
-    _guardar(acumular(NOVEDADES_DIR / "Inactivos posgrado.xlsx",  inactivos),  NOVEDADES_DIR / "Inactivos posgrado.xlsx")
-    _guardar(acumular(NOVEDADES_DIR / "Modificados posgrado.xlsx",modificados),NOVEDADES_DIR / "Modificados posgrado.xlsx")
+    # 5. Acumular y guardar (en la carpeta de prueba, no en data/novedades/)
+    _guardar(acumular(TEST_OUTPUT_DIR / "Nuevos_posgrado.xlsx",     nuevos),     TEST_OUTPUT_DIR / "Nuevos_posgrado.xlsx")
+    _guardar(acumular(TEST_OUTPUT_DIR / "Inactivos_posgrado.xlsx",  inactivos),  TEST_OUTPUT_DIR / "Inactivos_posgrado.xlsx")
+    _guardar(acumular(TEST_OUTPUT_DIR / "Modificados_posgrado.xlsx",modificados),TEST_OUTPUT_DIR / "Modificados_posgrado.xlsx")
 
     # 6. Gráficos
     from analisis_historico_posgrado import generar_graficos

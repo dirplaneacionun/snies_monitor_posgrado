@@ -64,6 +64,37 @@ COLS_MOD_DETAIL = [
     "DIVISIÓN UNINORTE",
 ]
 
+# Columnas compactas para la vista previa embebida en index.html
+COLS_IDX_PREVIEW = [
+    "FECHA_OBTENCION",
+    "CÓDIGO_SNIES_DEL_PROGRAMA",
+    "NOMBRE_DEL_PROGRAMA",
+    "NOMBRE_INSTITUCIÓN",
+    "NIVEL_DE_FORMACIÓN",
+    "DIVISIÓN UNINORTE",
+]
+COLS_IDX_PREVIEW_MOD = [
+    "FECHA_OBTENCION",
+    "CÓDIGO_SNIES_DEL_PROGRAMA",
+    "NOMBRE_DEL_PROGRAMA",
+    "NOMBRE_INSTITUCIÓN",
+    "QUE_CAMBIO",
+]
+
+# Columnas para las páginas dedicadas de modificados por campo (costos / créditos)
+COLS_CAMPO_CREDITOS = [
+    "FECHA_OBTENCION", "CÓDIGO_SNIES_DEL_PROGRAMA", "NOMBRE_DEL_PROGRAMA",
+    "NOMBRE_INSTITUCIÓN", "NIVEL_DE_FORMACIÓN", "SECTOR",
+    "NÚMERO_CRÉDITOS_ANTERIOR", "NÚMERO_CRÉDITOS",
+    "DEPARTAMENTO_OFERTA_PROGRAMA", "DIVISIÓN UNINORTE",
+]
+COLS_CAMPO_COSTOS = [
+    "FECHA_OBTENCION", "CÓDIGO_SNIES_DEL_PROGRAMA", "NOMBRE_DEL_PROGRAMA",
+    "NOMBRE_INSTITUCIÓN", "NIVEL_DE_FORMACIÓN", "SECTOR",
+    "COSTO_MATRÍCULA_ESTUD_NUEVOS_ANTERIOR", "COSTO_MATRÍCULA_ESTUD_NUEVOS",
+    "DEPARTAMENTO_OFERTA_PROGRAMA", "DIVISIÓN UNINORTE",
+]
+
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
 def _parse_fecha(val):
@@ -303,6 +334,11 @@ def build_index(df_n, df_i, df_m, snap_dates, snap_counts, today):
     div_n_lbl, div_n_val = _top_n(df_n, "DIVISIÓN UNINORTE", 12)
     dep_i_lbl, dep_i_val = _top_n(df_i, "DEPARTAMENTO_OFERTA_PROGRAMA", 12)
 
+    # Vista previa embebida (tabla con pestañas Nuevos/Inactivos/Modificados)
+    prev_n = _to_records(_normalizar_fechas(df_n), COLS_IDX_PREVIEW)
+    prev_i = _to_records(_normalizar_fechas(df_i), COLS_IDX_PREVIEW)
+    prev_m = _to_records(_normalizar_fechas(df_m), COLS_IDX_PREVIEW_MOD)
+
     data_js = json.dumps({
         "timeline": {"dates": snap_dates, "counts": snap_counts},
         "niv_n": {"labels": niv_n_lbl, "values": niv_n_val},
@@ -310,6 +346,9 @@ def build_index(df_n, df_i, df_m, snap_dates, snap_counts, today):
         "sec_n": {"labels": sec_n_lbl, "values": sec_n_val},
         "div_n": {"labels": div_n_lbl, "values": div_n_val},
         "dep_i": {"labels": dep_i_lbl, "values": dep_i_val},
+        "prev_nue": prev_n,
+        "prev_ina": prev_i,
+        "prev_mod": prev_m,
     }, ensure_ascii=False)
 
     return f"""<!DOCTYPE html>
@@ -339,6 +378,19 @@ def build_index(df_n, df_i, df_m, snap_dates, snap_counts, today):
 .hc-sub {{ font-size:.78rem; color:#9ca3af; margin-top:5px; }}
 .hc-arrow {{ float:right; font-size:1.3rem; color:#d1d5db; margin-top:-36px; }}
 .full {{ grid-column:1/-1 !important; }}
+.tab-nav {{ display:flex; gap:.3rem; padding:1rem 1.2rem 0; }}
+.tab-btn {{ padding:.65rem 1.1rem; border:none; background:transparent; cursor:pointer;
+            font-size:.82rem; font-weight:600; color:#6b7280;
+            border-bottom:3px solid transparent; }}
+.tab-btn.on {{ color:#003f88; border-bottom-color:#003f88; }}
+.tab-btn .n {{ font-size:.68rem; background:#f0f2f5; padding:1px 7px; border-radius:10px; margin-left:.4rem; }}
+.tab-btn.on .n {{ background:#003f88; color:#fff; }}
+.tab-pane {{ display:none; padding:0 1.2rem 1.2rem; }}
+.tab-pane.on {{ display:block; }}
+.idx-search {{ width:100%; max-width:420px; padding:.5rem .8rem; border:1px solid #e5e7eb;
+               border-radius:6px; font-size:.83rem; margin:.9rem 0; outline:none; background:#f9fafb; }}
+.idx-search:focus {{ border-color:#003f88; background:#fff; }}
+.idx-tbl-wrap {{ max-height:420px; overflow-y:auto; border:1px solid #f3f4f6; border-radius:8px; }}
 </style>
 </head>
 <body>
@@ -419,9 +471,30 @@ def build_index(df_n, df_i, df_m, snap_dates, snap_counts, today):
       <div id="ch-dep-i" style="height:280px"></div>
     </div>
   </div>
+
+  <div class="table-wrap" style="padding:0">
+    <div class="tab-nav">
+      <button class="tab-btn on" onclick="idxTab('nue',this)">Nuevos <span class="n" id="idx-bn-nue">0</span></button>
+      <button class="tab-btn" onclick="idxTab('ina',this)">Inactivos <span class="n" id="idx-bn-ina">0</span></button>
+      <button class="tab-btn" onclick="idxTab('mod',this)">Modificados <span class="n" id="idx-bn-mod">0</span></button>
+    </div>
+    <div id="idx-tp-nue" class="tab-pane on">
+      <input class="idx-search" placeholder="Buscar por nombre, institución, código SNIES…" oninput="idxFilter('nue',this.value)">
+      <div class="idx-tbl-wrap" id="idx-tw-nue"></div>
+    </div>
+    <div id="idx-tp-ina" class="tab-pane">
+      <input class="idx-search" placeholder="Buscar por nombre, institución, código SNIES…" oninput="idxFilter('ina',this.value)">
+      <div class="idx-tbl-wrap" id="idx-tw-ina"></div>
+    </div>
+    <div id="idx-tp-mod" class="tab-pane">
+      <input class="idx-search" placeholder="Buscar por nombre, institución, código SNIES…" oninput="idxFilter('mod',this.value)">
+      <div class="idx-tbl-wrap" id="idx-tw-mod"></div>
+    </div>
+  </div>
 </main>
 {PLOTLY_CDN}
 <script>
+{JS_BADGES}
 const D = {data_js};
 const LAY = {PLOTLY_LAYOUT};
 const CFG = {CFG};
@@ -466,6 +539,76 @@ Plotly.newPlot('ch-dep-i', [{{
   marker:{{color:'#dc2626'}},
   hovertemplate:'%{{y}}<br>%{{x:,}}<extra></extra>'
 }}], {{...LAY, margin:{{l:160,r:30,t:10,b:30}}}}, CFG);
+
+// ── Vista previa embebida: pestañas Nuevos/Inactivos/Modificados ───────────
+const IDX_ROWS = {{nue: D.prev_nue, ina: D.prev_ina, mod: D.prev_mod}};
+const IDX_COLS = {{
+  nue: ['FECHA_OBTENCION','CÓDIGO_SNIES_DEL_PROGRAMA','NOMBRE_DEL_PROGRAMA','NOMBRE_INSTITUCIÓN','NIVEL_DE_FORMACIÓN','DIVISIÓN UNINORTE'],
+  ina: ['FECHA_OBTENCION','CÓDIGO_SNIES_DEL_PROGRAMA','NOMBRE_DEL_PROGRAMA','NOMBRE_INSTITUCIÓN','NIVEL_DE_FORMACIÓN','DIVISIÓN UNINORTE'],
+  mod: ['FECHA_OBTENCION','CÓDIGO_SNIES_DEL_PROGRAMA','NOMBRE_DEL_PROGRAMA','NOMBRE_INSTITUCIÓN','QUE_CAMBIO'],
+}};
+const IDX_HEAD = {{
+  FECHA_OBTENCION:'Fecha', 'CÓDIGO_SNIES_DEL_PROGRAMA':'Cód.', NOMBRE_DEL_PROGRAMA:'Programa',
+  'NOMBRE_INSTITUCIÓN':'Institución', 'NIVEL_DE_FORMACIÓN':'Nivel', 'DIVISIÓN UNINORTE':'División',
+  QUE_CAMBIO:'¿Qué cambió?'
+}};
+let idxSortDir = {{}};
+
+function idxBuildTbl(type, rows) {{
+  const cols = IDX_COLS[type].filter(c => !rows.length || c in rows[0]);
+  let h = '<table><thead><tr>';
+  cols.forEach(c => {{
+    h += '<th onclick="idxSort(\\''+type+'\\',\\''+c+'\\')">' + (IDX_HEAD[c]||c) + ' <span style="opacity:.4">↕</span></th>';
+  }});
+  h += '</tr></thead><tbody>';
+  if (!rows.length) {{
+    h += '<tr><td colspan="'+cols.length+'" style="text-align:center;color:#9ca3af;padding:2rem">Sin registros</td></tr>';
+  }} else {{
+    rows.forEach(r => {{
+      h += '<tr>' + cols.map(c => {{
+        if (c === 'NIVEL_DE_FORMACIÓN') return '<td>'+nivelBadge(r[c]||'')+'</td>';
+        if (c === 'QUE_CAMBIO') return '<td>'+changePill(r[c]||'')+'</td>';
+        return '<td>'+(r[c]||'')+'</td>';
+      }}).join('') + '</tr>';
+    }});
+  }}
+  return h + '</tbody></table>';
+}}
+
+function idxRender(type) {{
+  document.getElementById('idx-tw-'+type).innerHTML = idxBuildTbl(type, IDX_ROWS[type]);
+}}
+
+['nue','ina','mod'].forEach(t => {{
+  idxRender(t);
+  document.getElementById('idx-bn-'+t).textContent = IDX_ROWS[t].length;
+}});
+
+function idxTab(id, btn) {{
+  document.querySelectorAll('.tab-pane').forEach(el => el.classList.remove('on'));
+  document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('on'));
+  document.getElementById('idx-tp-'+id).classList.add('on');
+  btn.classList.add('on');
+}}
+
+function idxFilter(type, q) {{
+  q = q.toLowerCase();
+  const base = {{nue: D.prev_nue, ina: D.prev_ina, mod: D.prev_mod}}[type];
+  const filtered = q
+    ? base.filter(r => Object.values(r).some(v => String(v).toLowerCase().includes(q)))
+    : base;
+  document.getElementById('idx-tw-'+type).innerHTML = idxBuildTbl(type, filtered);
+}}
+
+function idxSort(type, col) {{
+  const key = type + col;
+  idxSortDir[key] = !idxSortDir[key];
+  IDX_ROWS[type] = [...IDX_ROWS[type]].sort((a, b) => {{
+    const va = String(a[col]||''), vb = String(b[col]||'');
+    return idxSortDir[key] ? va.localeCompare(vb, 'es') : vb.localeCompare(va, 'es');
+  }});
+  idxRender(type);
+}}
 </script>
 </body>
 </html>"""
@@ -886,6 +1029,8 @@ def build_modificados(df, today):
     <h1>SNIES Monitor · Posgrado</h1>
     <div class="sub">Programas Modificados · Actualizado: {today}</div>
   </div>
+  <a class="back" href="modificados_creditos.html">Detalle créditos →</a>
+  <a class="back" href="modificados_costos.html">Detalle costos →</a>
   <a class="back" href="index.html">← Dashboard</a>
 </header>
 <main>
@@ -1139,6 +1284,325 @@ if (C.sc.x.length > 0) {{
 </html>"""
 
 
+# ── Páginas dedicadas: modificados por campo (costos / créditos) ──────────────
+
+def build_modificados_campo(df, campo_match, col_new, col_old, cols_tabla,
+                             titulo, unidad, color_hex, today):
+    """Página de detalle para un único campo vigilado (créditos o costo de
+    matrícula): sólo incluye los registros donde ESE campo cambió (un
+    registro de 'modificados' puede tener varios campos cambiados a la vez,
+    por eso se filtra por substring y no por el primer campo listado)."""
+    df = _normalizar_fechas(df)
+    df = df[df["QUE_CAMBIO"].fillna("").str.contains(campo_match + ":", regex=False)].copy()
+
+    last_count, last_fecha = _count_last(df)
+
+    cols = [c for c in cols_tabla if c in df.columns]
+    records = _to_records(df, cols)
+
+    opts_nivel  = _unique_sorted(df, "NIVEL_DE_FORMACIÓN")
+    opts_sector = _unique_sorted(df, "SECTOR")
+    opts_div    = _unique_sorted(df, "DIVISIÓN UNINORTE")
+    opts_dep    = _unique_sorted(df, "DEPARTAMENTO_OFERTA_PROGRAMA")
+    opts_fecha  = sorted(df["FECHA_OBTENCION"].dropna().unique().tolist(), reverse=True)
+
+    inst_lbl, inst_val = _top_n(df, "NOMBRE_INSTITUCIÓN", 12)
+    niv_lbl,  niv_val  = _top_n(df, "NIVEL_DE_FORMACIÓN")
+    div_lbl,  div_val  = _top_n(df, "DIVISIÓN UNINORTE")
+    dep_lbl,  dep_val  = _top_n(df, "DEPARTAMENTO_OFERTA_PROGRAMA", 12)
+
+    if "FECHA_OBTENCION" in df.columns:
+        tl = df.groupby("FECHA_OBTENCION").size().sort_index()
+        tl_dates, tl_vals = tl.index.tolist(), tl.values.tolist()
+    else:
+        tl_dates, tl_vals = [], []
+
+    # Scatter antes/después
+    sc_x, sc_y, sc_txt = [], [], []
+    if col_new in df.columns and col_old in df.columns:
+        def _to_num(s):
+            try:
+                return float(str(s).replace(",", "").strip())
+            except (ValueError, TypeError):
+                return None
+        for _, row in df.iterrows():
+            xv = _to_num(row[col_old])
+            yv = _to_num(row[col_new])
+            if xv is not None and yv is not None and xv > 0 and yv > 0:
+                sc_x.append(xv)
+                sc_y.append(yv)
+                sc_txt.append(str(row.get("NOMBRE_DEL_PROGRAMA", ""))[:40])
+
+    headers_js  = json.dumps(cols, ensure_ascii=False)
+    records_js  = json.dumps(records, ensure_ascii=False)
+    opts_nivel_js  = json.dumps(opts_nivel,  ensure_ascii=False)
+    opts_sector_js = json.dumps(opts_sector, ensure_ascii=False)
+    opts_div_js    = json.dumps(opts_div,    ensure_ascii=False)
+    opts_dep_js    = json.dumps(opts_dep,    ensure_ascii=False)
+    opts_fecha_js  = json.dumps(opts_fecha,  ensure_ascii=False)
+
+    charts_js = json.dumps({
+        "inst": {"labels": inst_lbl, "values": inst_val},
+        "niv":  {"labels": niv_lbl,  "values": niv_val},
+        "div":  {"labels": div_lbl,  "values": div_val},
+        "dep":  {"labels": dep_lbl,  "values": dep_val},
+        "tl":   {"dates": tl_dates,  "values": tl_vals},
+        "sc":   {"x": sc_x, "y": sc_y, "text": sc_txt},
+    }, ensure_ascii=False)
+
+    def _opt_html(values):
+        return "".join(f'<option value="{v}">{v}</option>' for v in values)
+
+    col_header_html = "".join(f"<th data-col='{c}'>{c}</th>" for c in cols)
+
+    return f"""<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SNIES Posgrado · Modificados · {titulo}</title>
+<style>
+{COMMON_CSS}
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>SNIES Monitor · Posgrado</h1>
+    <div class="sub">Modificados · {titulo} · Actualizado: {today}</div>
+  </div>
+  <a class="back" href="modificados.html">← Modificados</a>
+</header>
+<main>
+  <div class="cards">
+    <div class="card">
+      <div class="label">Total acumulado</div>
+      <div class="value" style="color:{color_hex}">{len(df):,}</div>
+      <div class="sub">registros con cambio en {titulo.lower()}</div>
+    </div>
+    <div class="card">
+      <div class="label">Último run</div>
+      <div class="value" style="color:{color_hex}">{last_count:,}</div>
+      <div class="sub">{last_fecha}</div>
+    </div>
+    <div class="card">
+      <div class="label">Registros mostrados</div>
+      <div class="value" id="rec-count" style="color:#374151">—</div>
+      <div class="sub">según filtros activos</div>
+    </div>
+  </div>
+
+  <div class="filters">
+    <div class="fg">
+      <label>Nivel de formación</label>
+      <select id="f-nivel"><option value="">Todos</option>
+        {_opt_html(opts_nivel)}</select>
+    </div>
+    <div class="fg">
+      <label>Sector</label>
+      <select id="f-sector"><option value="">Todos</option>
+        {_opt_html(opts_sector)}</select>
+    </div>
+    <div class="fg">
+      <label>División Uninorte</label>
+      <select id="f-div"><option value="">Todas</option>
+        {_opt_html(opts_div)}</select>
+    </div>
+    <div class="fg">
+      <label>Departamento</label>
+      <select id="f-dep"><option value="">Todos</option>
+        {_opt_html(opts_dep)}</select>
+    </div>
+    <div class="fg">
+      <label>Fecha run</label>
+      <select id="f-fecha"><option value="">Todas</option>
+        {_opt_html(opts_fecha)}</select>
+    </div>
+    <div class="fg">
+      <label>Buscar</label>
+      <input id="f-search" type="text" placeholder="Nombre, código, institución…">
+    </div>
+    <button class="btn-clear" onclick="clearFilters()">Limpiar</button>
+  </div>
+
+  <div class="charts">
+    <div class="chart-box" style="grid-column:1/-1">
+      <h3>{titulo} modificados por fecha de run</h3>
+      <div id="ch-tl" style="height:200px"></div>
+    </div>
+    <div class="chart-box" style="grid-column:1/-1">
+      <h3>{titulo}: antes vs después ({unidad})</h3>
+      <div id="ch-sc" style="height:340px"></div>
+    </div>
+    <div class="chart-box">
+      <h3>Top 12 instituciones</h3>
+      <div id="ch-inst" style="height:320px"></div>
+    </div>
+    <div class="chart-box">
+      <h3>Por nivel de formación</h3>
+      <div id="ch-niv" style="height:280px"></div>
+    </div>
+    <div class="chart-box">
+      <h3>Por División Uninorte</h3>
+      <div id="ch-div" style="height:280px"></div>
+    </div>
+    <div class="chart-box">
+      <h3>Top 12 departamentos afectados</h3>
+      <div id="ch-dep" style="height:320px"></div>
+    </div>
+  </div>
+
+  <div class="table-wrap">
+    <div class="table-info" id="tbl-info"></div>
+    <table id="tbl">
+      <thead><tr>{col_header_html}</tr></thead>
+      <tbody id="tbl-body"></tbody>
+    </table>
+  </div>
+</main>
+{PLOTLY_CDN}
+<script>
+const HEADERS = {headers_js};
+const ALL_DATA = {records_js};
+const C = {charts_js};
+
+{JS_BADGES}
+
+let sortCol = 'FECHA_OBTENCION', sortDir = -1;
+
+function getFiltered() {{
+  const nivel  = document.getElementById('f-nivel').value;
+  const sector = document.getElementById('f-sector').value;
+  const div    = document.getElementById('f-div').value;
+  const dep    = document.getElementById('f-dep').value;
+  const fecha  = document.getElementById('f-fecha').value;
+  const q      = document.getElementById('f-search').value.toLowerCase();
+  return ALL_DATA.filter(r => {{
+    if (nivel  && r['NIVEL_DE_FORMACIÓN']          !== nivel)  return false;
+    if (sector && r['SECTOR']                      !== sector) return false;
+    if (div    && r['DIVISIÓN UNINORTE']            !== div)    return false;
+    if (fecha  && r['FECHA_OBTENCION']              !== fecha)  return false;
+    if (dep    && r['DEPARTAMENTO_OFERTA_PROGRAMA'] !== dep)    return false;
+    if (q) {{
+      if (!Object.values(r).join(' ').toLowerCase().includes(q)) return false;
+    }}
+    return true;
+  }});
+}}
+
+function cellHtml(col, val) {{
+  if (col === 'SECTOR') return sectorBadge(val);
+  if (col === 'NIVEL_DE_FORMACIÓN') return nivelBadge(val);
+  if (['COSTO_MATRÍCULA_ESTUD_NUEVOS','COSTO_MATRÍCULA_ESTUD_NUEVOS_ANTERIOR',
+       'NÚMERO_CRÉDITOS','NÚMERO_CRÉDITOS_ANTERIOR'].includes(col))
+    return `<span class="num">${{fmtNum(val)}}</span>`;
+  return fmt(val);
+}}
+
+function renderTable(data) {{
+  const sorted = [...data].sort((a,b) => {{
+    const av = a[sortCol]||'', bv = b[sortCol]||'';
+    return av < bv ? -sortDir : av > bv ? sortDir : 0;
+  }});
+  const tbody = document.getElementById('tbl-body');
+  tbody.innerHTML = sorted.map(r => {{
+    const cells = HEADERS.map(h => {{
+      const cls = h === 'NOMBRE_DEL_PROGRAMA' ? ' class="prog"'
+               : h === 'NOMBRE_INSTITUCIÓN'  ? ' class="inst"' : '';
+      return `<td${{cls}}>${{cellHtml(h, r[h])}}</td>`;
+    }}).join('');
+    return `<tr>${{cells}}</tr>`;
+  }}).join('');
+  document.getElementById('rec-count').textContent = data.length.toLocaleString('es-CO');
+  document.getElementById('tbl-info').textContent =
+    `Mostrando ${{data.length.toLocaleString('es-CO')}} de ${{ALL_DATA.length.toLocaleString('es-CO')}} registros`;
+}}
+
+function update() {{ renderTable(getFiltered()); }}
+function clearFilters() {{
+  ['f-nivel','f-sector','f-div','f-dep','f-fecha'].forEach(id =>
+    document.getElementById(id).value = '');
+  document.getElementById('f-search').value = '';
+  update();
+}}
+
+document.getElementById('tbl').querySelector('thead').addEventListener('click', e => {{
+  const th = e.target.closest('th');
+  if (!th) return;
+  const col = th.dataset.col;
+  sortDir = sortCol === col ? sortDir * -1 : -1;
+  sortCol = col;
+  document.querySelectorAll('th').forEach(t => t.classList.remove('asc','desc'));
+  th.classList.add(sortDir === 1 ? 'asc' : 'desc');
+  update();
+}});
+
+['f-nivel','f-sector','f-div','f-dep','f-fecha'].forEach(id =>
+  document.getElementById(id).addEventListener('change', update));
+document.getElementById('f-search').addEventListener('input', update);
+
+update();
+
+// ── Charts ──────────────────────────────────────────────────────────────────
+const LAY = {PLOTLY_LAYOUT};
+const CFG = {CFG};
+
+Plotly.newPlot('ch-tl', [{{
+  x: C.tl.dates, y: C.tl.values, type:'bar',
+  marker:{{color:'{color_hex}'}},
+  hovertemplate:'%{{x}}<br>%{{y:,}}<extra></extra>'
+}}], {{...LAY, margin:{{l:60,r:20,t:10,b:60}}}}, CFG);
+
+Plotly.newPlot('ch-inst', [{{
+  x: C.inst.values, y: C.inst.labels, type:'bar', orientation:'h',
+  marker:{{color:'#92400e'}},
+  hovertemplate:'%{{y}}<br>%{{x:,}}<extra></extra>'
+}}], {{...LAY, margin:{{l:260,r:30,t:10,b:30}}}}, CFG);
+
+Plotly.newPlot('ch-niv', [{{
+  x: C.niv.values, y: C.niv.labels, type:'bar', orientation:'h',
+  marker:{{color:'#b45309'}},
+  hovertemplate:'%{{y}}<br>%{{x:,}}<extra></extra>'
+}}], {{...LAY, margin:{{l:230,r:30,t:10,b:30}}}}, CFG);
+
+Plotly.newPlot('ch-div', [{{
+  x: C.div.values, y: C.div.labels, type:'bar', orientation:'h',
+  marker:{{color:'#0059c1'}},
+  hovertemplate:'%{{y}}<br>%{{x:,}}<extra></extra>'
+}}], {{...LAY, margin:{{l:260,r:30,t:10,b:30}}}}, CFG);
+
+Plotly.newPlot('ch-dep', [{{
+  x: C.dep.values, y: C.dep.labels, type:'bar', orientation:'h',
+  marker:{{color:'#2979d5'}},
+  hovertemplate:'%{{y}}<br>%{{x:,}}<extra></extra>'
+}}], {{...LAY, margin:{{l:160,r:30,t:10,b:30}}}}, CFG);
+
+if (C.sc.x.length > 0) {{
+  const maxV = Math.max(...C.sc.x, ...C.sc.y);
+  Plotly.newPlot('ch-sc', [
+    {{
+      x: C.sc.x, y: C.sc.y, mode:'markers', type:'scatter',
+      text: C.sc.text,
+      marker:{{color:'{color_hex}', size:7, opacity:0.7}},
+      hovertemplate:'%{{text}}<br>Antes: %{{x}}<br>Después: %{{y}}<extra></extra>'
+    }},
+    {{
+      x:[0,maxV], y:[0,maxV], mode:'lines', type:'scatter',
+      line:{{color:'#9ca3af', width:1, dash:'dot'}},
+      hoverinfo:'skip', showlegend:false
+    }}
+  ], {{...LAY, margin:{{l:70,r:20,t:10,b:60}},
+        xaxis:{{title:'{titulo} anterior'}},
+        yaxis:{{title:'{titulo} actual'}}}}, CFG);
+}} else {{
+  document.getElementById('ch-sc').innerHTML =
+    '<p style="color:#9ca3af;padding:2rem;text-align:center">Sin datos de {titulo.lower()} para comparar</p>';
+}}
+</script>
+</body>
+</html>"""
+
+
 # ── main ───────────────────────────────────────────────────────────────────────
 
 def main():
@@ -1180,8 +1644,29 @@ def main():
         encoding="utf-8"
     )
 
+    print("Generando modificados_creditos.html…")
+    (DOCS / "modificados_creditos.html").write_text(
+        build_modificados_campo(
+            df_m, "NÚMERO_CRÉDITOS", "NÚMERO_CRÉDITOS", "NÚMERO_CRÉDITOS_ANTERIOR",
+            COLS_CAMPO_CREDITOS, "Créditos", "créditos", "#d97706", today,
+        ),
+        encoding="utf-8"
+    )
+
+    print("Generando modificados_costos.html…")
+    (DOCS / "modificados_costos.html").write_text(
+        build_modificados_campo(
+            df_m, "COSTO_MATRÍCULA_ESTUD_NUEVOS",
+            "COSTO_MATRÍCULA_ESTUD_NUEVOS", "COSTO_MATRÍCULA_ESTUD_NUEVOS_ANTERIOR",
+            COLS_CAMPO_COSTOS, "Costo de matrícula", "COP", "#059669", today,
+        ),
+        encoding="utf-8"
+    )
+
     print("OK Dashboard generado en docs/")
-    for f in ["index.html","nuevos.html","inactivos.html","modificados.html"]:
+    paginas = ["index.html", "nuevos.html", "inactivos.html", "modificados.html",
+               "modificados_creditos.html", "modificados_costos.html"]
+    for f in paginas:
         size = (DOCS / f).stat().st_size
         print(f"  {f}: {size/1024:.0f} KB")
 
