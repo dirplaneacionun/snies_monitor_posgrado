@@ -671,7 +671,7 @@ document.getElementById('k-mod-sub').textContent = 'acumulado: ' + fmt(D.kpis.mo
   Plotly.newPlot('ch-periodos', traces, {
     barmode: 'stack',
     margin: {t:10, r:20, b:90, l:70},
-    xaxis: {title: 'Periodos', tickmode: 'array',
+    xaxis: {title: 'Periodos', type: 'category', tickmode: 'array',
             tickvals: ds.labels, tickfont: {size:11}},
     yaxis: {title: 'N. Programas', showgrid: true,
             gridcolor: '#e2e8f0', tickfont: {size:11}},
@@ -1499,7 +1499,7 @@ function plotPeriodos(id, rows) {
   Plotly.react(id, traces, {
     barmode:'stack',
     margin:{t:10,r:20,b:90,l:60},
-    xaxis:{title:'Periodos',tickmode:'array',tickvals:labels,tickfont:{size:11}},
+    xaxis:{title:'Periodos',type:'category',tickmode:'array',tickvals:labels,tickfont:{size:11}},
     yaxis:{title:'N. Programas',showgrid:true,gridcolor:'#e2e8f0',tickfont:{size:11}},
     plot_bgcolor:'white',paper_bgcolor:'white',bargap:.25,
     legend:{orientation:'h',y:-0.28,font:{size:11},entrywidth:120,entrywidthmode:'pixels'},
