@@ -349,6 +349,17 @@ section{margin-bottom:1.5rem}
 .card-title{font-size:.7rem;font-weight:600;text-transform:uppercase;
   letter-spacing:.06em;color:var(--muted);margin-bottom:.9rem}
 .chart-2col{display:grid;grid-template-columns:1fr 2fr;gap:1rem}
+.mini-sub{font-size:.72rem;color:var(--muted);margin:-.4rem 0 1rem}
+.mini-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:1rem}
+.mini-card{background:var(--surface);border-radius:var(--radius);padding:1rem 1.1rem;
+  box-shadow:0 1px 3px rgba(0,0,0,.07);border:1px solid var(--border)}
+.mini-head{display:flex;justify-content:space-between;align-items:flex-start;gap:.5rem;margin-bottom:.15rem}
+.mini-title{font-size:.72rem;font-weight:600;color:var(--muted);line-height:1.3}
+.mini-badge{font-size:.72rem;font-weight:700;white-space:nowrap}
+.mini-badge.up{color:var(--text)}
+.mini-badge.down{color:var(--red)}
+.mini-val{font-size:1.5rem;font-weight:700;margin-bottom:.35rem}
+.mini-chart{height:72px}
 .tab-nav{display:flex;border-bottom:1px solid var(--border);padding:0 1.5rem;background:var(--surface);
   border-radius:var(--radius) var(--radius) 0 0}
 .tab-btn{padding:.85rem 1.25rem;border:none;background:none;cursor:pointer;font-size:.8rem;
@@ -450,8 +461,9 @@ tr:hover td{background:#f8fafc}
   </section>
 
   <section class="card">
-    <div class="card-title">Evolución de programas activos por modalidad</div>
-    <div id="ch-modalidad-hist" style="height:280px"></div>
+    <div class="card-title">Evolución de la modalidad de los programas activos</div>
+    <div class="mini-sub">Cada panel tiene su propia escala — ordenados de mayor a menor crecimiento relativo desde el primer registro</div>
+    <div class="mini-grid" id="ch-modalidad-mini"></div>
   </section>
 
   <section class="chart-2col">
@@ -756,21 +768,48 @@ document.getElementById('k-mod-sub').textContent = 'acumulado: ' + fmt(D.kpis.mo
 
 (function() {
   const hm = D.historico_modalidad;
-  if (!hm || !hm.fechas || !hm.fechas.length) { _emptyChart(document.getElementById('ch-modalidad-hist')); return; }
-  const COLORS = ['#2d5b9e','#fcc10e','#bd900b','#ae1e22','#6e91b9','#214174','#d56f18'];
-  const traces = hm.series.map((s, i) => ({
-    x: hm.fechas, y: s.values, name: s.name, type: 'scatter', mode: 'lines+markers',
-    line: {color: COLORS[i % COLORS.length], width: 2.5},
-    marker: {color: COLORS[i % COLORS.length], size: 6},
-    hovertemplate: s.name + '<br>%{x}<br><b>%{y:,}</b> programas<extra></extra>'
-  }));
-  Plotly.newPlot('ch-modalidad-hist', traces, {
-    margin: {t:10, r:20, b:40, l:55},
-    xaxis: {showgrid: false, tickfont: {size: 10}},
-    yaxis: {showgrid: true, gridcolor: '#e2e8f0', tickfont: {size: 11}},
-    plot_bgcolor: 'white', paper_bgcolor: 'white', hovermode: 'x unified',
-    legend: {orientation: 'h', y: -0.2, font: {size: 10}}
-  }, {responsive: true, displayModeBar: false});
+  const cont = document.getElementById('ch-modalidad-mini');
+  if (!hm || !hm.fechas || !hm.fechas.length || !hm.series.length) { _emptyChart(cont); return; }
+
+  const withGrowth = hm.series.map(s => {
+    const vals = s.values;
+    const first = vals.length ? vals[0] : null;
+    const last = vals.length ? vals[vals.length - 1] : null;
+    let pct = null, isNew = false;
+    if (first === 0) { if (last > 0) isNew = true; else pct = 0; }
+    else if (first != null) { pct = ((last - first) / first) * 100; }
+    const sortKey = isNew ? Infinity : (pct == null ? -Infinity : pct);
+    return {name: s.name, values: vals, last, pct, isNew, sortKey};
+  });
+  withGrowth.sort((a, b) => b.sortKey - a.sortKey);
+
+  cont.innerHTML = withGrowth.map((s, i) => {
+    let badge;
+    if (s.isNew) badge = '<span class="mini-badge up">▲ nuevo</span>';
+    else {
+      const cls = s.pct >= 0 ? 'up' : 'down';
+      const arrow = s.pct >= 0 ? '▲' : '▼';
+      badge = '<span class="mini-badge ' + cls + '">' + arrow + ' ' + (s.pct >= 0 ? '+' : '') + Math.round(s.pct) + '%</span>';
+    }
+    return '<div class="mini-card">' +
+      '<div class="mini-head"><div class="mini-title">' + s.name + '</div>' + badge + '</div>' +
+      '<div class="mini-val">' + fmt(s.last) + '</div>' +
+      '<div class="mini-chart" id="mini-chart-' + i + '"></div>' +
+    '</div>';
+  }).join('');
+
+  withGrowth.forEach((s, i) => {
+    Plotly.newPlot('mini-chart-' + i, [{
+      x: hm.fechas, y: s.values, type: 'scatter', mode: 'lines',
+      line: {color: '#2d5b9e', width: 2},
+      hovertemplate: '%{x}<br><b>%{y:,}</b> programas<extra></extra>'
+    }], {
+      margin: {t:4, r:4, b:20, l:32},
+      xaxis: {showgrid: false, tickfont: {size: 9}, type: 'date', tickformat: '%Y', dtick: 'M12'},
+      yaxis: {showgrid: false, tickfont: {size: 9}, zeroline: false, rangemode: 'tozero'},
+      plot_bgcolor: 'white', paper_bgcolor: 'white', hovermode: 'x'
+    }, {responsive: true, displayModeBar: false});
+  });
 })();
 
 function _emptyChart(el, msg) {
@@ -2880,7 +2919,7 @@ def build_index(historico, nuevos_df, inactivos_df, mods_df, snapshot_df):
         "por_depto":     _distribucion(snapshot_df, "DEPARTAMENTO_OFERTA_PROGRAMA"),
         "por_modalidad": _distribucion(snapshot_df, "MODALIDAD"),
         "por_periodos_stacked": por_periodos_stacked,
-        "historico_modalidad": historico_por_modalidad(historico),
+        "historico_modalidad": historico_por_modalidad(historico, top_n=10),
         "por_depto_mapa": por_depto_mapa,
         "snapshot":      _to_records(snapshot_df, SNAPSHOT_COLS),
         "nuevos":        _to_records(nuevos_df,    COLS_IDX_PREVIEW),
