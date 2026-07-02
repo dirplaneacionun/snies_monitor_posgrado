@@ -487,6 +487,16 @@ function cineRemove(cine) {
   renderCineChart(filtered);
 }
 
+const PERIODOS_TOPE = 12;
+function _bucketPeriodo(k) { return k >= PERIODOS_TOPE ? PERIODOS_TOPE + '+' : String(k); }
+function _periodoSortKey(l) { return l === PERIODOS_TOPE + '+' ? Infinity : parseInt(l, 10); }
+function _matchesPeriodoDet(v, filtro) {
+  if (!v) return false;
+  const n = Math.round(parseFloat(String(v)));
+  if (isNaN(n)) return false;
+  return filtro === PERIODOS_TOPE + '+' ? n >= PERIODOS_TOPE : n === parseInt(filtro, 10);
+}
+
 function plotPeriodos(id, rows) {
   const el=document.getElementById(id); if(!el) return;
   const COL='NÚMERO_PERIODOS_DE_DURACIÓN', PCOL='PERIODICIDAD';
@@ -495,13 +505,14 @@ function plotPeriodos(id, rows) {
   const pivot={}, periSet=new Set();
   rows.forEach(r=>{
     const v=r[COL]; if(!v||String(v).trim()==='') return;
-    const k=Math.round(parseFloat(v)); if(isNaN(k)) return;
+    const k0=Math.round(parseFloat(v)); if(isNaN(k0)) return;
+    const k=_bucketPeriodo(k0);
     const p=(r[PCOL]||'Sin definir').trim()||'Sin definir';
     if(!pivot[k]) pivot[k]={};
     pivot[k][p]=(pivot[k][p]||0)+1;
     periSet.add(p);
   });
-  const labels=Object.keys(pivot).map(Number).sort((a,b)=>a-b);
+  const labels=Object.keys(pivot).sort((a,b)=>_periodoSortKey(a)-_periodoSortKey(b));
   if(!labels.length){ _emptyChart(el); return; }
   const peris=[...periSet].sort((a,b)=>{
     const ta=labels.reduce((s,l)=>s+(pivot[l][a]||0),0);
@@ -533,12 +544,13 @@ function _applySubFilters(rows) {
   let r=rows;
   if(_periodosDet!==null){
     const COL='NÚMERO_PERIODOS_DE_DURACIÓN';
-    r=r.filter(x=>{const v=x[COL];return v&&Math.round(parseFloat(String(v)))===_periodosDet;});
+    r=r.filter(x=>_matchesPeriodoDet(x[COL], _periodosDet));
   }
   return r;
 }
 
 function setPeriodosDetalleFilter(val) {
+  val = String(val);
   if(_periodosDet===val){clearPeriodosDetalleFilter();return;}
   _periodosDet=val;
   applyFilters();
@@ -652,7 +664,8 @@ function renderAll(rows) {
   if(cpd){
     cpd.style.display=_periodosDet!==null?'flex':'none';
     if(_periodosDet!==null) document.getElementById('per-det-val').textContent=
-      _periodosDet+' periodos — '+subRows.length.toLocaleString('es-CO')+' programas';
+      (_periodosDet===PERIODOS_TOPE+'+' ? PERIODOS_TOPE+' o más periodos' : _periodosDet+' periodos')+
+      ' — '+subRows.length.toLocaleString('es-CO')+' programas';
   }
   const cineFiltroVal=gv('f-cine');
   if(ccd){

@@ -168,6 +168,20 @@ def _num(v):
         return None
 
 
+# Periodos de duración >= este tope se agrupan en una sola barra "12+":
+# valores individuales por encima de 12 son casos aislados (1-2 programas)
+# que no aportan al gráfico y sí lo hacen ilegible.
+PERIODOS_TOPE = 12
+
+
+def _bucket_periodo(v):
+    return f"{PERIODOS_TOPE}+" if v >= PERIODOS_TOPE else str(v)
+
+
+def _periodo_sort_key(label):
+    return (1, 0) if label == f"{PERIODOS_TOPE}+" else (0, int(label))
+
+
 def _cambia(row, col_new, col_old):
     if col_new not in row.index or col_old not in row.index:
         return None
@@ -178,7 +192,9 @@ def _cambia(row, col_new, col_old):
 
 
 def leer_historico():
-    """Cuenta el total de programas activos por snapshot en Programas/."""
+    """Cuenta el total de programas activos por snapshot en Programas/, y
+    de paso el desglose por modalidad (para el gráfico de evolución por
+    modalidad en index.html)."""
     snaps = glob.glob(str(PROGRAMAS / "Programas postgrado *.xlsx"))
     rows = []
     for s in snaps:
@@ -194,13 +210,33 @@ def leer_historico():
         except ValueError:
             continue
         try:
-            df = pd.read_excel(s, sheet_name="Programas", usecols=["NOMBRE_DEL_PROGRAMA"])
+            df = pd.read_excel(s, sheet_name="Programas", usecols=["NOMBRE_DEL_PROGRAMA", "MODALIDAD"])
             df = df.iloc[:-2]
         except Exception:
             continue
-        rows.append((dt, len(df), s))
+        modalidad_counts = df["MODALIDAD"].fillna("Sin definir").value_counts().to_dict()
+        rows.append((dt, len(df), s, modalidad_counts))
     rows.sort(key=lambda x: x[0])
-    return [{"fecha": r[0].strftime("%Y-%m-%d"), "total": r[1], "_path": r[2]} for r in rows]
+    return [
+        {"fecha": r[0].strftime("%Y-%m-%d"), "total": r[1], "_path": r[2], "_modalidad": r[3]}
+        for r in rows
+    ]
+
+
+def historico_por_modalidad(historico, top_n=6):
+    """Series de evolución de programas activos por modalidad a través de
+    los snapshots históricos, para el gráfico de líneas del index."""
+    fechas = [h["fecha"] for h in historico]
+    totales = {}
+    for h in historico:
+        for modalidad, count in h["_modalidad"].items():
+            totales[modalidad] = totales.get(modalidad, 0) + count
+    top_modalidades = sorted(totales, key=totales.get, reverse=True)[:top_n]
+    series = [
+        {"name": mod, "values": [h["_modalidad"].get(mod, 0) for h in historico]}
+        for mod in top_modalidades
+    ]
+    return {"fechas": fechas, "series": series}
 
 
 def leer_novedades(nombre):
@@ -411,6 +447,11 @@ tr:hover td{background:#f8fafc}
       <div id="ch-flujo" style="height:260px"></div>
       <div id="flujo-note" style="font-size:.7rem;color:#64748b;margin-top:.6rem;line-height:1.4"></div>
     </div>
+  </section>
+
+  <section class="card">
+    <div class="card-title">Evolución de programas activos por modalidad</div>
+    <div id="ch-modalidad-hist" style="height:280px"></div>
   </section>
 
   <section class="chart-2col">
@@ -689,7 +730,7 @@ document.getElementById('k-mod-sub').textContent = 'acumulado: ' + fmt(D.kpis.mo
   const sel = document.getElementById('periodos-selector');
   if (sel) {
     sel.innerHTML = ds.labels.map(l =>
-      '<button id="pchip-'+l+'" onclick="setPeriodosFilter('+l+')" '+
+      '<button id="pchip-'+l+'" onclick="setPeriodosFilter(\''+l+'\')" '+
       'style="padding:.22rem .65rem;background:#f1f5f9;border:1px solid #e2e8f0;'+
       'border-radius:2rem;font-size:.72rem;cursor:pointer;transition:all .15s;white-space:nowrap">'+
       l+' sem&nbsp;<span style="opacity:.6">('+totals[l].toLocaleString('es-CO')+')</span></button>'
@@ -710,6 +751,25 @@ document.getElementById('k-mod-sub').textContent = 'acumulado: ' + fmt(D.kpis.mo
     xaxis: {showgrid: false, tickfont: {size: 10}},
     yaxis: {showgrid: true, gridcolor: '#e2e8f0', tickfont: {size: 11}},
     plot_bgcolor: 'white', paper_bgcolor: 'white', hovermode: 'x unified'
+  }, {responsive: true, displayModeBar: false});
+})();
+
+(function() {
+  const hm = D.historico_modalidad;
+  if (!hm || !hm.fechas || !hm.fechas.length) { _emptyChart(document.getElementById('ch-modalidad-hist')); return; }
+  const COLORS = ['#2d5b9e','#fcc10e','#bd900b','#ae1e22','#6e91b9','#214174','#d56f18'];
+  const traces = hm.series.map((s, i) => ({
+    x: hm.fechas, y: s.values, name: s.name, type: 'scatter', mode: 'lines+markers',
+    line: {color: COLORS[i % COLORS.length], width: 2.5},
+    marker: {color: COLORS[i % COLORS.length], size: 6},
+    hovertemplate: s.name + '<br>%{x}<br><b>%{y:,}</b> programas<extra></extra>'
+  }));
+  Plotly.newPlot('ch-modalidad-hist', traces, {
+    margin: {t:10, r:20, b:40, l:55},
+    xaxis: {showgrid: false, tickfont: {size: 10}},
+    yaxis: {showgrid: true, gridcolor: '#e2e8f0', tickfont: {size: 11}},
+    plot_bgcolor: 'white', paper_bgcolor: 'white', hovermode: 'x unified',
+    legend: {orientation: 'h', y: -0.2, font: {size: 10}}
   }, {responsive: true, displayModeBar: false});
 })();
 
@@ -780,6 +840,16 @@ function _emptyChart(el, msg) {
 let periodosFiltro = null;
 const _snapAll = D.snapshot || [];
 
+function _matchesPeriodo(v, filtro) {
+  if (v === undefined || v === '') return false;
+  const n = Math.round(parseFloat(String(v)));
+  if (isNaN(n)) return false;
+  return filtro === '12+' ? n >= 12 : n === parseInt(filtro, 10);
+}
+function _periodoLabel(filtro) {
+  return filtro === '12+' ? '12 o más periodos' : filtro + ' periodos';
+}
+
 const _SNAP_COLS = ['CÓDIGO_SNIES_DEL_PROGRAMA','NOMBRE_DEL_PROGRAMA','NOMBRE_INSTITUCIÓN',
                     'SECTOR','MODALIDAD','DEPARTAMENTO_OFERTA_PROGRAMA','PERIODICIDAD'];
 const _SNAP_HEAD = {
@@ -810,8 +880,7 @@ function filterSnap() {
   const insTokens = _norm(gv('snap-institucion')).split(/\\s+/).filter(Boolean);
   const se = gv('snap-sector'), de = gv('snap-depto'), mo = gv('snap-modalidad');
   const res = _snapAll.filter(r => {
-    const v = r['NÚMERO_PERIODOS_DE_DURACIÓN'];
-    if (!(v !== undefined && v !== '' && Math.round(parseFloat(String(v))) === periodosFiltro)) return false;
+    if (!_matchesPeriodo(r['NÚMERO_PERIODOS_DE_DURACIÓN'], periodosFiltro)) return false;
     if (!_rowMatches(r, qTokens)) return false;
     if (insTokens.length) {
       const hayIns = _norm(r['NOMBRE_INSTITUCIÓN']);
@@ -843,13 +912,11 @@ function _updateChipStyles() {
 }
 
 function setPeriodosFilter(val) {
+  val = String(val);
   if (periodosFiltro === val) { clearPeriodosFilter(); return; }
   periodosFiltro = val;
-  const matching = _snapAll.filter(r => {
-    const v = r['NÚMERO_PERIODOS_DE_DURACIÓN'];
-    return v !== undefined && v !== '' && Math.round(parseFloat(String(v))) === val;
-  });
-  const label = val + ' periodos — ' + matching.length.toLocaleString('es-CO') + ' programas activos';
+  const matching = _snapAll.filter(r => _matchesPeriodo(r['NÚMERO_PERIODOS_DE_DURACIÓN'], val));
+  const label = _periodoLabel(val) + ' — ' + matching.length.toLocaleString('es-CO') + ' programas activos';
   document.getElementById('periodos-chip').style.display = 'flex';
   document.getElementById('periodos-chip-val').textContent = label;
   document.getElementById('snap-title').textContent = label;
@@ -1470,6 +1537,16 @@ function cineRemove(cine) {
   renderCineChart(filtered);
 }
 
+const PERIODOS_TOPE = 12;
+function _bucketPeriodo(k) { return k >= PERIODOS_TOPE ? PERIODOS_TOPE + '+' : String(k); }
+function _periodoSortKey(l) { return l === PERIODOS_TOPE + '+' ? Infinity : parseInt(l, 10); }
+function _matchesPeriodoDet(v, filtro) {
+  if (!v) return false;
+  const n = Math.round(parseFloat(String(v)));
+  if (isNaN(n)) return false;
+  return filtro === PERIODOS_TOPE + '+' ? n >= PERIODOS_TOPE : n === parseInt(filtro, 10);
+}
+
 function plotPeriodos(id, rows) {
   const el=document.getElementById(id); if(!el) return;
   const COL='NÚMERO_PERIODOS_DE_DURACIÓN', PCOL='PERIODICIDAD';
@@ -1478,13 +1555,14 @@ function plotPeriodos(id, rows) {
   const pivot={}, periSet=new Set();
   rows.forEach(r=>{
     const v=r[COL]; if(!v||String(v).trim()==='') return;
-    const k=Math.round(parseFloat(v)); if(isNaN(k)) return;
+    const k0=Math.round(parseFloat(v)); if(isNaN(k0)) return;
+    const k=_bucketPeriodo(k0);
     const p=(r[PCOL]||'Sin definir').trim()||'Sin definir';
     if(!pivot[k]) pivot[k]={};
     pivot[k][p]=(pivot[k][p]||0)+1;
     periSet.add(p);
   });
-  const labels=Object.keys(pivot).map(Number).sort((a,b)=>a-b);
+  const labels=Object.keys(pivot).sort((a,b)=>_periodoSortKey(a)-_periodoSortKey(b));
   if(!labels.length){ _emptyChart(el); return; }
   const peris=[...periSet].sort((a,b)=>{
     const ta=labels.reduce((s,l)=>s+(pivot[l][a]||0),0);
@@ -1516,12 +1594,13 @@ function _applySubFilters(rows) {
   let r=rows;
   if(_periodosDet!==null){
     const COL='NÚMERO_PERIODOS_DE_DURACIÓN';
-    r=r.filter(x=>{const v=x[COL];return v&&Math.round(parseFloat(String(v)))===_periodosDet;});
+    r=r.filter(x=>_matchesPeriodoDet(x[COL], _periodosDet));
   }
   return r;
 }
 
 function setPeriodosDetalleFilter(val) {
+  val = String(val);
   if(_periodosDet===val){clearPeriodosDetalleFilter();return;}
   _periodosDet=val;
   applyFilters();
@@ -1635,7 +1714,8 @@ function renderAll(rows) {
   if(cpd){
     cpd.style.display=_periodosDet!==null?'flex':'none';
     if(_periodosDet!==null) document.getElementById('per-det-val').textContent=
-      _periodosDet+' periodos — '+subRows.length.toLocaleString('es-CO')+' programas';
+      (_periodosDet===PERIODOS_TOPE+'+' ? PERIODOS_TOPE+' o más periodos' : _periodosDet+' periodos')+
+      ' — '+subRows.length.toLocaleString('es-CO')+' programas';
   }
   const cineFiltroVal=gv('f-cine');
   if(ccd){
@@ -2782,11 +2862,11 @@ def build_index(historico, nuevos_df, inactivos_df, mods_df, snapshot_df):
         df_p = snapshot_df.copy()
         df_p["_periodo"] = pd.to_numeric(df_p["NÚMERO_PERIODOS_DE_DURACIÓN"], errors="coerce")
         df_p = df_p.dropna(subset=["_periodo"])
-        df_p["_periodo"] = df_p["_periodo"].round().astype(int)
+        df_p["_periodo"] = df_p["_periodo"].round().astype(int).apply(_bucket_periodo)
         df_p["_periodicidad"] = df_p.get("PERIODICIDAD", "Sin definir").fillna("Sin definir")
         pivot = df_p.pivot_table(index="_periodo", columns="_periodicidad",
                                   aggfunc="size", fill_value=0)
-        labels = sorted(pivot.index.tolist())
+        labels = sorted(pivot.index.tolist(), key=_periodo_sort_key)
         series = [{"name": str(col), "values": [int(pivot.loc[l, col]) if l in pivot.index else 0 for l in labels]}
                   for col in pivot.columns]
         series.sort(key=lambda s: -sum(s["values"]))
@@ -2800,6 +2880,7 @@ def build_index(historico, nuevos_df, inactivos_df, mods_df, snapshot_df):
         "por_depto":     _distribucion(snapshot_df, "DEPARTAMENTO_OFERTA_PROGRAMA"),
         "por_modalidad": _distribucion(snapshot_df, "MODALIDAD"),
         "por_periodos_stacked": por_periodos_stacked,
+        "historico_modalidad": historico_por_modalidad(historico),
         "por_depto_mapa": por_depto_mapa,
         "snapshot":      _to_records(snapshot_df, SNAPSHOT_COLS),
         "nuevos":        _to_records(nuevos_df,    COLS_IDX_PREVIEW),
