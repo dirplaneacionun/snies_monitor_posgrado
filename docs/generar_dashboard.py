@@ -730,7 +730,7 @@ document.getElementById('k-mod-sub').textContent = 'acumulado: ' + fmt(D.kpis.mo
   const sel = document.getElementById('periodos-selector');
   if (sel) {
     sel.innerHTML = ds.labels.map(l =>
-      '<button id="pchip-'+l+'" onclick="setPeriodosFilter(\''+l+'\')" '+
+      '<button id="pchip-'+l+'" onclick="setPeriodosFilter(\\''+l+'\\')" '+
       'style="padding:.22rem .65rem;background:#f1f5f9;border:1px solid #e2e8f0;'+
       'border-radius:2rem;font-size:.72rem;cursor:pointer;transition:all .15s;white-space:nowrap">'+
       l+' sem&nbsp;<span style="opacity:.6">('+totals[l].toLocaleString('es-CO')+')</span></button>'
