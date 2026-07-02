@@ -6,3 +6,6 @@ tmp/
 *.crdownload
 
 .claude/
+
+# Carpeta de referencia con el HTML de pregrado (material de consulta, no del repo)
+pregrado/
