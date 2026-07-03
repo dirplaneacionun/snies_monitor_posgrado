@@ -65,7 +65,8 @@ COLS_IDX_PREVIEW = [
 ]
 COLS_IDX_PREVIEW_MOD = [
     "FECHA_OBTENCION", "CÓDIGO_SNIES_DEL_PROGRAMA", "NOMBRE_DEL_PROGRAMA",
-    "NOMBRE_INSTITUCIÓN", "QUE_CAMBIO",
+    "NOMBRE_INSTITUCIÓN", "SECTOR", "MODALIDAD", "DEPARTAMENTO_OFERTA_PROGRAMA",
+    "QUE_CAMBIO",
 ]
 
 # Columnas del universo enriquecido usado por las páginas de créditos/costos
@@ -74,43 +75,6 @@ COLS_UNIVERSO = [
     "NOMBRE_INSTITUCIÓN", "SECTOR", "DEPARTAMENTO_OFERTA_PROGRAMA",
     "DIVISIÓN UNINORTE", "CINE_F_2013_AC_CAMPO_ESPECÍFIC", "QUE_CAMBIO",
 ]
-
-# ── Departamento SNIES → nombre usado por el GeoJSON de Colombia ──────────────
-DEPTO_GEO_MAP = {
-    "Antioquia": "ANTIOQUIA",
-    "Atlántico": "ATLANTICO",
-    "Bogotá, D.C.": "SANTAFE DE BOGOTA D.C",
-    "Bolívar": "BOLIVAR",
-    "Boyacá": "BOYACA",
-    "Caldas": "CALDAS",
-    "Caquetá": "CAQUETA",
-    "Casanare": "CASANARE",
-    "Cauca": "CAUCA",
-    "Cesar": "CESAR",
-    "Chocó": "CHOCO",
-    "Córdoba": "CORDOBA",
-    "Cundinamarca": "CUNDINAMARCA",
-    "Guainía": "GUAINIA",
-    "Guaviare": "GUAVIARE",
-    "Huila": "HUILA",
-    "La Guajira": "LA GUAJIRA",
-    "Magdalena": "MAGDALENA",
-    "Meta": "META",
-    "Nariño": "NARIÑO",
-    "Norte de Santander": "NORTE DE SANTANDER",
-    "Putumayo": "PUTUMAYO",
-    "Quindío": "QUINDIO",
-    "Risaralda": "RISARALDA",
-    "San Andrés, Providencia y Santa Catalina": "SAN ANDRES PROVIDENCIA Y SANTA CATALINA",
-    "Santander": "SANTANDER",
-    "Sucre": "SUCRE",
-    "Tolima": "TOLIMA",
-    "Valle del Cauca": "VALLE DEL CAUCA",
-    "Arauca": "ARAUCA",
-    "Vaupés": "VAUPES",
-    "Amazonas": "AMAZONAS",
-    "Vichada": "VICHADA",
-}
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -130,13 +94,6 @@ def _to_records(df, cols):
                 rec[c] = str(v)
         records.append(rec)
     return records
-
-
-def _distribucion(df, campo, top_n=15):
-    if campo not in df.columns or df.empty:
-        return []
-    vc = df[campo].dropna().value_counts().head(top_n)
-    return [{"label": str(k), "value": int(v)} for k, v in vc.items()]
 
 
 def _count_last_run(df):
@@ -168,20 +125,6 @@ def _num(v):
         return None
 
 
-# Periodos de duración >= este tope se agrupan en una sola barra "12+":
-# valores individuales por encima de 12 son casos aislados (1-2 programas)
-# que no aportan al gráfico y sí lo hacen ilegible.
-PERIODOS_TOPE = 12
-
-
-def _bucket_periodo(v):
-    return f"{PERIODOS_TOPE}+" if v >= PERIODOS_TOPE else str(v)
-
-
-def _periodo_sort_key(label):
-    return (1, 0) if label == f"{PERIODOS_TOPE}+" else (0, int(label))
-
-
 def _cambia(row, col_new, col_old):
     if col_new not in row.index or col_old not in row.index:
         return None
@@ -193,8 +136,9 @@ def _cambia(row, col_new, col_old):
 
 def leer_historico():
     """Cuenta el total de programas activos por snapshot en Programas/, y
-    de paso el desglose por modalidad (para el gráfico de evolución por
-    modalidad en index.html)."""
+    de paso el desglose por modalidad y el detalle sector×departamento×
+    modalidad de cada fila (para el gráfico de evolución por modalidad y el
+    cross-tab histórico que alimenta el filtro global de index.html)."""
     snaps = glob.glob(str(PROGRAMAS / "Programas postgrado *.xlsx"))
     rows = []
     for s in snaps:
@@ -210,33 +154,82 @@ def leer_historico():
         except ValueError:
             continue
         try:
-            df = pd.read_excel(s, sheet_name="Programas", usecols=["NOMBRE_DEL_PROGRAMA", "MODALIDAD"])
+            df = pd.read_excel(
+                s, sheet_name="Programas",
+                usecols=["NOMBRE_DEL_PROGRAMA", "MODALIDAD", "SECTOR", "DEPARTAMENTO_OFERTA_PROGRAMA"])
             df = df.iloc[:-2]
         except Exception:
             continue
         modalidad_counts = df["MODALIDAD"].fillna("Sin definir").value_counts().to_dict()
-        rows.append((dt, len(df), s, modalidad_counts))
+        cruzado = list(zip(
+            df["SECTOR"].fillna("Sin definir"),
+            df["DEPARTAMENTO_OFERTA_PROGRAMA"].fillna("Sin definir"),
+            df["MODALIDAD"].fillna("Sin definir"),
+        ))
+        rows.append((dt, len(df), s, modalidad_counts, cruzado))
     rows.sort(key=lambda x: x[0])
     return [
-        {"fecha": r[0].strftime("%Y-%m-%d"), "total": r[1], "_path": r[2], "_modalidad": r[3]}
+        {"fecha": r[0].strftime("%Y-%m-%d"), "total": r[1], "_path": r[2],
+         "_modalidad": r[3], "_cruzado": r[4]}
         for r in rows
     ]
 
 
-def historico_por_modalidad(historico, top_n=6):
-    """Series de evolución de programas activos por modalidad a través de
-    los snapshots históricos, para el gráfico de líneas del index."""
-    fechas = [h["fecha"] for h in historico]
+def _modalidad_bucketing(historico, top_n=6):
+    """Calcula el top N de modalidades por total histórico y una función de
+    bucketeo que colapsa el resto en 'Otras'. La usan tanto el gráfico de
+    evolución como el filtro global, para que un mismo valor de modalidad
+    signifique lo mismo en toda la página."""
     totales = {}
     for h in historico:
         for modalidad, count in h["_modalidad"].items():
             totales[modalidad] = totales.get(modalidad, 0) + count
     top_modalidades = sorted(totales, key=totales.get, reverse=True)[:top_n]
-    series = [
-        {"name": mod, "values": [h["_modalidad"].get(mod, 0) for h in historico]}
-        for mod in top_modalidades
-    ]
-    return {"fechas": fechas, "series": series}
+    top_set = set(top_modalidades)
+    orden = list(top_modalidades)
+    if "Otras" not in orden and any(m not in top_set for m in totales):
+        orden.append("Otras")
+
+    def bucket(m):
+        return m if m in top_set else "Otras"
+
+    return orden, bucket
+
+
+def historico_por_modalidad(historico, top_n=6):
+    """Series de evolución de programas activos por modalidad (top N + Otras)
+    a través de los snapshots históricos, para las mini-tarjetas del index."""
+    fechas = [h["fecha"] for h in historico]
+    orden, bucket = _modalidad_bucketing(historico, top_n)
+    series_vals = {name: [] for name in orden}
+    for h in historico:
+        counts = {}
+        for modalidad, count in h["_modalidad"].items():
+            b = bucket(modalidad)
+            counts[b] = counts.get(b, 0) + count
+        for name in orden:
+            series_vals[name].append(counts.get(name, 0))
+    return {"fechas": fechas, "series": [{"name": n, "values": series_vals[n]} for n in orden]}
+
+
+def historico_cruzado(historico, top_n=6):
+    """Cross-tab histórico fecha×sector×departamento×modalidad (bucketeada
+    top N + 'Otras') a través de todos los snapshots. Sirve para que 'Total
+    acumulado' y 'Evolución de modalidad' respondan al filtro global sin
+    tener que traer el detalle fila-a-fila de cada snapshot al navegador.
+    Se serializa como tuplas cortas [fecha, sector, depto, modalidad, n]
+    porque el volumen (decenas de miles de combinaciones) hace que las
+    claves de un dict repitan mucho peso en el JSON."""
+    _, bucket = _modalidad_bucketing(historico, top_n)
+    filas = []
+    for h in historico:
+        combo_counts = {}
+        for sector, depto, modalidad in h["_cruzado"]:
+            key = (sector, depto, bucket(modalidad))
+            combo_counts[key] = combo_counts.get(key, 0) + 1
+        for (sector, depto, modb), n in combo_counts.items():
+            filas.append([h["fecha"], sector, depto, modb, n])
+    return filas
 
 
 def leer_novedades(nombre):
@@ -304,7 +297,6 @@ def _universo_records(df_enr, extra_cols):
 
 
 PLOTLY_CDN = '<script src="https://cdn.plot.ly/plotly-2.35.2.min.js" charset="utf-8"></script>'
-GEO_URL = "https://gist.githubusercontent.com/john-guerra/43c7656821069d00dcbc/raw/be6a6e239cd5b5b803c6e7c2ec405b793a9064dd/Colombia.geo.json"
 
 
 # ── index.html ─────────────────────────────────────────────────────────────────
@@ -370,10 +362,6 @@ section{margin-bottom:1.5rem}
 .tab-pane{display:none;padding:1.25rem 1.5rem;background:var(--surface);
   border-radius:0 0 var(--radius) var(--radius)}
 .tab-pane.on{display:block}
-.search{width:100%;max-width:380px;padding:.55rem .9rem;border:1px solid var(--border);
-  border-radius:.5rem;font-size:.8rem;margin-bottom:1rem;outline:none}
-.search:focus{border-color:var(--blue)}
-.f-row{display:flex;gap:.45rem;flex-wrap:wrap;align-items:center;margin-bottom:.9rem}
 .f-input{flex:1;min-width:170px;max-width:300px;padding:.5rem .8rem;border:1px solid var(--border);
   border-radius:.4rem;font-size:.8rem;outline:none}
 .f-input:focus{border-color:var(--blue)}
@@ -383,14 +371,6 @@ section{margin-bottom:1.5rem}
 .f-btn{padding:.45rem .85rem;border:1px solid var(--border);border-radius:.4rem;
   font-size:.77rem;background:var(--surface);cursor:pointer;color:var(--muted);white-space:nowrap}
 .f-btn:hover{background:var(--bg)}
-.ac-wrap{position:relative;flex:1;min-width:170px;max-width:300px}
-.ac-menu{position:absolute;top:calc(100% + 2px);left:0;right:0;z-index:300;
-  background:var(--surface);border:1px solid var(--border);border-radius:.4rem;
-  box-shadow:0 8px 20px rgba(0,0,0,.14);max-height:260px;overflow-y:auto;display:none}
-.ac-menu.show{display:block}
-.ac-item{padding:.45rem .75rem;font-size:.78rem;cursor:pointer;color:var(--text)}
-.ac-item:hover{background:var(--bg)}
-.ac-empty{padding:.45rem .75rem;font-size:.78rem;color:var(--muted)}
 .tbl-wrap{max-height:420px;overflow-y:auto;border:1px solid var(--border);border-radius:.5rem}
 table{width:100%;border-collapse:collapse;font-size:.78rem}
 th{background:var(--bg);padding:.65rem .9rem;text-align:left;font-size:.68rem;
@@ -402,11 +382,17 @@ td{padding:.65rem .9rem;border-bottom:1px solid var(--border);vertical-align:top
 tr:last-child td{border-bottom:none}
 tr:hover td{background:#f8fafc}
 .empty{text-align:center;color:var(--muted);padding:2.5rem}
+.global-filter{position:sticky;top:0;z-index:40;background:var(--surface);
+  border-bottom:1px solid var(--border);padding:.75rem 2rem;display:flex;gap:.5rem;
+  align-items:center;flex-wrap:wrap;box-shadow:0 2px 6px rgba(0,0,0,.06)}
+.gf-count{font-size:.75rem;color:var(--muted);margin-left:auto;white-space:nowrap}
 @media(max-width:900px){
   .kpi-grid{grid-template-columns:repeat(2,1fr)}
   .chart-2col{grid-template-columns:1fr}
   main{padding:1rem}
   header{flex-direction:column;gap:.75rem;text-align:center}
+  .global-filter{padding:.65rem 1rem}
+  .gf-count{margin-left:0;width:100%}
 }
 </style>
 </head>
@@ -421,6 +407,14 @@ tr:hover td{background:#f8fafc}
     <strong id="fecha-update">–</strong>
   </div>
 </header>
+<div class="global-filter">
+  <input class="f-input" id="gf-q" style="max-width:320px" placeholder="Buscar por nombre, institución, código SNIES…" oninput="applyGlobalFilter()">
+  <select id="gf-sector" class="f-sel" onchange="applyGlobalFilter()"><option value="">Todos los sectores</option></select>
+  <select id="gf-depto" class="f-sel" onchange="applyGlobalFilter()"><option value="">Todos los departamentos</option></select>
+  <select id="gf-modalidad" class="f-sel" onchange="applyGlobalFilter()"><option value="">Todas las modalidades</option></select>
+  <button class="f-btn" onclick="resetGlobalFilter()">✕ Limpiar filtros</button>
+  <span class="gf-count" id="gf-count"></span>
+</div>
 <main>
   <section class="kpi-grid">
     <div class="kpi">
@@ -478,11 +472,6 @@ tr:hover td{background:#f8fafc}
   </section>
 
   <section class="card">
-    <div class="card-title">Programas activos por departamento</div>
-    <div id="ch-mapa" style="height:520px"></div>
-  </section>
-
-  <section class="card">
     <div class="card-title">Distribución de programas activos por duración (periodos requeridos) — clic para filtrar</div>
     <div id="ch-periodos" style="height:260px"></div>
     <div id="periodos-selector" style="display:flex;flex-wrap:wrap;gap:.35rem;margin-top:.6rem"></div>
@@ -503,17 +492,6 @@ tr:hover td{background:#f8fafc}
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.75rem;flex-wrap:wrap;gap:.5rem">
         <div class="card-title" style="margin-bottom:0">Programas activos — <span id="snap-title"></span></div>
       </div>
-      <div class="f-row">
-        <input class="f-input" id="snap-search" placeholder="Buscar por nombre, código SNIES…" oninput="filterSnap()">
-        <div class="ac-wrap">
-          <input class="f-input" id="snap-institucion" style="width:100%" placeholder="Buscar institución…" oninput="filterSnap()">
-          <div class="ac-menu" id="snap-institucion-menu"></div>
-        </div>
-        <select id="snap-sector" class="f-sel" onchange="filterSnap()"><option value="">Todos los sectores</option></select>
-        <select id="snap-depto" class="f-sel" onchange="filterSnap()"><option value="">Todos los departamentos</option></select>
-        <select id="snap-modalidad" class="f-sel" onchange="filterSnap()"><option value="">Todas las modalidades</option></select>
-        <button class="f-btn" onclick="resetSnapFilters()">✕ Limpiar</button>
-      </div>
       <div class="tbl-wrap" id="snap-tbl"></div>
     </div>
   </section>
@@ -531,53 +509,12 @@ tr:hover td{background:#f8fafc}
       </button>
     </div>
     <div id="tp-nue" class="tab-pane on">
-      <div class="f-row">
-        <input class="f-input" id="q-nue" placeholder="Buscar por nombre, código SNIES…" oninput="filter('nue')">
-        <div class="ac-wrap">
-          <input class="f-input" id="ins-nue" style="width:100%" placeholder="Buscar institución…" oninput="filter('nue')">
-          <div class="ac-menu" id="ins-nue-menu"></div>
-        </div>
-        <select id="se-nue" class="f-sel" onchange="filter('nue')"><option value="">Todos los sectores</option></select>
-        <select id="de-nue" class="f-sel" onchange="filter('nue')"><option value="">Todos los departamentos</option></select>
-        <select id="di-nue" class="f-sel" onchange="filter('nue')"><option value="">Todas las divisiones</option></select>
-        <select id="mo-nue" class="f-sel" onchange="filter('nue')"><option value="">Todas las modalidades</option></select>
-        <select id="fe-nue" class="f-sel" onchange="filter('nue')"><option value="">Todas las fechas</option></select>
-        <select id="ci-nue" class="f-sel" onchange="filter('nue')"><option value="">Todos los campos CINE</option></select>
-        <button class="f-btn" onclick="resetTblFilters('nue')">✕ Limpiar</button>
-      </div>
       <div class="tbl-wrap" id="tw-nue"></div>
     </div>
     <div id="tp-ina" class="tab-pane">
-      <div class="f-row">
-        <input class="f-input" id="q-ina" placeholder="Buscar por nombre, código SNIES…" oninput="filter('ina')">
-        <div class="ac-wrap">
-          <input class="f-input" id="ins-ina" style="width:100%" placeholder="Buscar institución…" oninput="filter('ina')">
-          <div class="ac-menu" id="ins-ina-menu"></div>
-        </div>
-        <select id="se-ina" class="f-sel" onchange="filter('ina')"><option value="">Todos los sectores</option></select>
-        <select id="de-ina" class="f-sel" onchange="filter('ina')"><option value="">Todos los departamentos</option></select>
-        <select id="di-ina" class="f-sel" onchange="filter('ina')"><option value="">Todas las divisiones</option></select>
-        <select id="mo-ina" class="f-sel" onchange="filter('ina')"><option value="">Todas las modalidades</option></select>
-        <select id="fe-ina" class="f-sel" onchange="filter('ina')"><option value="">Todas las fechas</option></select>
-        <select id="ci-ina" class="f-sel" onchange="filter('ina')"><option value="">Todos los campos CINE</option></select>
-        <button class="f-btn" onclick="resetTblFilters('ina')">✕ Limpiar</button>
-      </div>
       <div class="tbl-wrap" id="tw-ina"></div>
     </div>
     <div id="tp-mod" class="tab-pane">
-      <div class="f-row">
-        <input class="f-input" id="q-mod" placeholder="Buscar por nombre, código SNIES…" oninput="filter('mod')">
-        <div class="ac-wrap">
-          <input class="f-input" id="ins-mod" style="width:100%" placeholder="Buscar institución…" oninput="filter('mod')">
-          <div class="ac-menu" id="ins-mod-menu"></div>
-        </div>
-        <select id="se-mod" class="f-sel" onchange="filter('mod')"><option value="">Todos los sectores</option></select>
-        <select id="de-mod" class="f-sel" onchange="filter('mod')"><option value="">Todos los departamentos</option></select>
-        <select id="di-mod" class="f-sel" onchange="filter('mod')"><option value="">Todas las divisiones</option></select>
-        <select id="fe-mod" class="f-sel" onchange="filter('mod')"><option value="">Todas las fechas</option></select>
-        <select id="tc-mod" class="f-sel" onchange="filter('mod')"><option value="">Todos los cambios</option></select>
-        <button class="f-btn" onclick="resetTblFilters('mod')">✕ Limpiar</button>
-      </div>
       <div class="tbl-wrap" id="tw-mod"></div>
     </div>
   </section>
@@ -593,7 +530,6 @@ function _rowMatches(r, tokens) {
   return tokens.every(t => hay.includes(t));
 }
 function gv(id) { const el = document.getElementById(id); return el ? el.value : ''; }
-const parseFecha = s => { try { const [d,m,y]=s.split('/'); return new Date(+y,+m-1,+d); } catch(e){return new Date(0);} };
 function getSem(s) {
   if (!s || !s.trim()) return null;
   let y, m;
@@ -607,30 +543,6 @@ function addOpts(id, vals) {
   const el = document.getElementById(id); if (!el) return;
   vals.forEach(v => { const o = document.createElement('option'); o.value = o.textContent = v; el.appendChild(o); });
 }
-function initAutocomplete(inputId, menuId, options, onChange) {
-  const inp = document.getElementById(inputId), menu = document.getElementById(menuId);
-  if (!inp || !menu) return;
-  function render() {
-    const q = _norm(inp.value).trim();
-    const matches = (q ? options.filter(o => _norm(o).includes(q)) : options).slice(0, 50);
-    menu.innerHTML = matches.length
-      ? matches.map(o => '<div class="ac-item">' + o.replace(/&/g,'&amp;').replace(/</g,'&lt;') + '</div>').join('')
-      : '<div class="ac-empty">Sin coincidencias</div>';
-    menu.classList.add('show');
-  }
-  inp.addEventListener('focus', render);
-  inp.addEventListener('input', () => { render(); onChange(); });
-  menu.addEventListener('mousedown', e => {
-    const it = e.target.closest('.ac-item'); if (!it) return;
-    e.preventDefault();
-    inp.value = it.textContent;
-    menu.classList.remove('show');
-    onChange();
-  });
-  document.addEventListener('click', e => {
-    if (e.target !== inp && !menu.contains(e.target)) menu.classList.remove('show');
-  });
-}
 document.getElementById('fecha-update').textContent = D.ultima_actualizacion;
 document.getElementById('k-total').textContent = fmt(D.kpis.total_activos);
 document.getElementById('k-nue').textContent   = fmt(D.kpis.nuevos_ultimo);
@@ -641,11 +553,26 @@ document.getElementById('k-ina-sub').textContent = 'acumulado: ' + fmt(D.kpis.in
 document.getElementById('k-mod-sub').textContent = 'acumulado: ' + fmt(D.kpis.mods_total);
 
 
-(function() {
-  const d = D.por_sector;
-  if (!d.length) return;
+function _emptyChart(el, msg) {
+  if (!el) return;
+  el.innerHTML='<div style="display:flex;align-items:center;justify-content:center;height:100%;color:#64748b;font-size:.82rem">'+(msg||'Sin datos')+'</div>';
+}
+
+const PERIODOS_TOPE = 12;
+function _bucketPeriodo(v) {
+  const n = Math.round(parseFloat(v));
+  if (isNaN(n)) return null;
+  return n >= PERIODOS_TOPE ? PERIODOS_TOPE + '+' : String(n);
+}
+function _periodoSortKey(l) { return l === PERIODOS_TOPE + '+' ? Infinity : parseInt(l, 10); }
+
+function renderSector(data) {
+  const counts = {};
+  data.forEach(r => { const k = r['SECTOR'] || 'Sin definir'; counts[k] = (counts[k] || 0) + 1; });
+  const labels = Object.keys(counts).sort((a, b) => counts[b] - counts[a]);
+  if (!labels.length) { _emptyChart(document.getElementById('ch-sector')); return; }
   Plotly.newPlot('ch-sector', [{
-    labels: d.map(x => x.label), values: d.map(x => x.value),
+    labels, values: labels.map(l => counts[l]),
     type:'pie', hole:0.45,
     marker:{colors:['#2d5b9e','#fcc10e','#bd900b','#ae1e22','#6e91b9','#214174']},
     textinfo:'label+percent',
@@ -654,13 +581,15 @@ document.getElementById('k-mod-sub').textContent = 'acumulado: ' + fmt(D.kpis.mo
     margin:{t:10,r:10,b:10,l:10}, showlegend:false,
     plot_bgcolor:'white', paper_bgcolor:'white'
   }, {responsive:true, displayModeBar:false});
-})();
+}
 
-(function() {
-  const d = [...D.por_depto].reverse();
-  if (!d.length) return;
+function renderDepto(data) {
+  const counts = {};
+  data.forEach(r => { const k = r['DEPARTAMENTO_OFERTA_PROGRAMA']; if (!k) return; counts[k] = (counts[k] || 0) + 1; });
+  const top = Object.keys(counts).sort((a, b) => counts[b] - counts[a]).slice(0, 15).reverse();
+  if (!top.length) { _emptyChart(document.getElementById('ch-depto')); return; }
   Plotly.newPlot('ch-depto', [{
-    y: d.map(x => x.label), x: d.map(x => x.value),
+    y: top, x: top.map(l => counts[l]),
     type:'bar', orientation:'h',
     marker:{color:'#2d5b9e', opacity:0.82},
     hovertemplate:'%{y}<br><b>%{x:,}</b><extra></extra>'
@@ -670,54 +599,33 @@ document.getElementById('k-mod-sub').textContent = 'acumulado: ' + fmt(D.kpis.mo
     yaxis:{tickfont:{size:11}},
     plot_bgcolor:'white', paper_bgcolor:'white', bargap:0.3
   }, {responsive:true, displayModeBar:false});
-})();
+}
 
-(function() {
-  const d = D.por_depto_mapa;
-  if (!d || !d.length) return;
-  const GEO_URL = '__GEO_URL__';
-  fetch(GEO_URL)
-    .then(r => r.json())
-    .then(geo => {
-      Plotly.newPlot('ch-mapa', [{
-        type: 'choropleth',
-        geojson: geo,
-        featureidkey: 'properties.NOMBRE_DPT',
-        locations: d.map(x => x.depto),
-        z: d.map(x => x.total),
-        text: d.map(x => x.depto + '<br>' + x.total.toLocaleString('es-CO') + ' programas (' + x.pct + '%)'),
-        hovertemplate: '%{text}<extra></extra>',
-        colorscale: [[0,'#feecb7'],[0.35,'#fcc10e'],[0.7,'#2d5b9e'],[1,'#15284b']],
-        showscale: true,
-        colorbar: {thickness: 14, len: 0.6, title: {text: 'Programas', side: 'right', font: {size: 11}}},
-        marker: {line: {color: 'white', width: 0.5}}
-      }], {
-        geo: {
-          fitbounds: 'locations',
-          showframe: false,
-          showcoastlines: false,
-          showland: true, landcolor: '#f1f5f9',
-          showocean: true, oceancolor: '#e4ecf6',
-          showlakes: false,
-          projection: {type: 'mercator'}
-        },
-        margin: {t:0, r:0, b:0, l:0},
-        paper_bgcolor: 'white'
-      }, {responsive: true, displayModeBar: false});
-    })
-    .catch(() => {
-      document.getElementById('ch-mapa').innerHTML =
-        '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:#64748b;font-size:.82rem">No se pudo cargar el mapa</div>';
-    });
-})();
+function renderPeriodos(data) {
+  const combos = {};
+  const periodicidades = new Set();
+  data.forEach(r => {
+    const label = _bucketPeriodo(r['NÚMERO_PERIODOS_DE_DURACIÓN']);
+    if (label == null) return;
+    const per = r['PERIODICIDAD'] || 'Sin definir';
+    periodicidades.add(per);
+    (combos[label] = combos[label] || {})[per] = (combos[label][per] || 0) + 1;
+  });
+  const labels = Object.keys(combos).sort((a, b) => _periodoSortKey(a) - _periodoSortKey(b));
+  const sel = document.getElementById('periodos-selector');
+  if (!labels.length) {
+    _emptyChart(document.getElementById('ch-periodos'));
+    if (sel) sel.innerHTML = '';
+    return;
+  }
+  const series = [...periodicidades].map(per => ({
+    name: per, values: labels.map(l => (combos[l] && combos[l][per]) || 0)
+  })).sort((a, b) => b.values.reduce((x, y) => x + y, 0) - a.values.reduce((x, y) => x + y, 0));
 
-(function() {
-  const ds = D.por_periodos_stacked;
-  if (!ds || !ds.labels || !ds.labels.length) return;
   const PCOLORS = ['#2d5b9e','#fcc10e','#bd900b','#ae1e22','#6e91b9',
                    '#214174','#d56f18','#948e56','#15284b','#7a1518'];
-  const traces = ds.series.map((s, i) => ({
-    x: ds.labels, y: s.values, name: s.name, type: 'bar',
+  const traces = series.map((s, i) => ({
+    x: labels, y: s.values, name: s.name, type: 'bar',
     marker: {color: PCOLORS[i % PCOLORS.length], opacity: 0.85},
     hovertemplate: s.name + '<br>%{x} periodos — <b>%{y:,}</b> programas<extra></extra>'
   }));
@@ -725,7 +633,7 @@ document.getElementById('k-mod-sub').textContent = 'acumulado: ' + fmt(D.kpis.mo
     barmode: 'stack',
     margin: {t:10, r:20, b:90, l:70},
     xaxis: {title: 'Periodos', type: 'category', tickmode: 'array',
-            tickvals: ds.labels, tickfont: {size:11}},
+            tickvals: labels, tickfont: {size:11}},
     yaxis: {title: 'N. Programas', showgrid: true,
             gridcolor: '#e2e8f0', tickfont: {size:11}},
     plot_bgcolor: 'white', paper_bgcolor: 'white', bargap: 0.25,
@@ -736,25 +644,45 @@ document.getElementById('k-mod-sub').textContent = 'acumulado: ' + fmt(D.kpis.mo
   });
 
   const totals = {};
-  ds.labels.forEach((l, i) => {
-    totals[l] = ds.series.reduce((acc, ser) => acc + (ser.values[i] || 0), 0);
-  });
-  const sel = document.getElementById('periodos-selector');
+  labels.forEach(l => { totals[l] = combos[l] ? Object.values(combos[l]).reduce((a, b) => a + b, 0) : 0; });
   if (sel) {
-    sel.innerHTML = ds.labels.map(l =>
+    sel.innerHTML = labels.map(l =>
       '<button id="pchip-'+l+'" onclick="setPeriodosFilter(\\''+l+'\\')" '+
       'style="padding:.22rem .65rem;background:#f1f5f9;border:1px solid #e2e8f0;'+
       'border-radius:2rem;font-size:.72rem;cursor:pointer;transition:all .15s;white-space:nowrap">'+
       l+' sem&nbsp;<span style="opacity:.6">('+totals[l].toLocaleString('es-CO')+')</span></button>'
     ).join('');
+    _updateChipStyles();
   }
-})();
+}
 
-(function() {
-  const hist = D.historico || [];
-  if (!hist.length) { _emptyChart(document.getElementById('ch-historico')); return; }
+function _historicoAgregado() {
+  const filas = D.historico_cruzado || [];
+  const fechas = (D.historico || []).map(h => h.fecha);
+  const totalPorFecha = {}; fechas.forEach(f => { totalPorFecha[f] = 0; });
+  const porModalidad = {};
+  filas.forEach(fila => {
+    const fecha = fila[0], sector = fila[1], depto = fila[2], modalidad = fila[3], n = fila[4];
+    if (FILTRO.sector && sector !== FILTRO.sector) return;
+    if (FILTRO.depto && depto !== FILTRO.depto) return;
+    if (FILTRO.modalidad && modalidad !== FILTRO.modalidad) return;
+    totalPorFecha[fecha] = (totalPorFecha[fecha] || 0) + n;
+    (porModalidad[modalidad] = porModalidad[modalidad] || {})[fecha] = (porModalidad[modalidad][fecha] || 0) + n;
+  });
+  return {
+    fechas,
+    totales: fechas.map(f => totalPorFecha[f] || 0),
+    series: MODALIDADES_TOP.filter(name => porModalidad[name]).map(name => ({
+      name, values: fechas.map(f => (porModalidad[name] && porModalidad[name][f]) || 0)
+    }))
+  };
+}
+
+function renderHistorico(agg) {
+  const el = document.getElementById('ch-historico');
+  if (!agg.fechas.length) { _emptyChart(el); return; }
   Plotly.newPlot('ch-historico', [{
-    x: hist.map(h => h.fecha), y: hist.map(h => h.total),
+    x: agg.fechas, y: agg.totales,
     type: 'scatter', mode: 'lines+markers',
     line: {color: '#2d5b9e', width: 2.5}, marker: {color: '#2d5b9e', size: 6},
     hovertemplate: '%{x}<br><b>%{y:,}</b> programas activos<extra></extra>'
@@ -764,14 +692,13 @@ document.getElementById('k-mod-sub').textContent = 'acumulado: ' + fmt(D.kpis.mo
     yaxis: {showgrid: true, gridcolor: '#e2e8f0', tickfont: {size: 11}},
     plot_bgcolor: 'white', paper_bgcolor: 'white', hovermode: 'x unified'
   }, {responsive: true, displayModeBar: false});
-})();
+}
 
-(function() {
-  const hm = D.historico_modalidad;
+function renderModalidadMini(agg) {
   const cont = document.getElementById('ch-modalidad-mini');
-  if (!hm || !hm.fechas || !hm.fechas.length || !hm.series.length) { _emptyChart(cont); return; }
+  if (!agg.series.length) { _emptyChart(cont); return; }
 
-  const withGrowth = hm.series.map(s => {
+  const withGrowth = agg.series.map(s => {
     const vals = s.values;
     const first = vals.length ? vals[0] : null;
     const last = vals.length ? vals[vals.length - 1] : null;
@@ -800,7 +727,7 @@ document.getElementById('k-mod-sub').textContent = 'acumulado: ' + fmt(D.kpis.mo
 
   withGrowth.forEach((s, i) => {
     Plotly.newPlot('mini-chart-' + i, [{
-      x: hm.fechas, y: s.values, type: 'scatter', mode: 'lines',
+      x: agg.fechas, y: s.values, type: 'scatter', mode: 'lines',
       line: {color: '#2d5b9e', width: 2},
       hovertemplate: '%{x}<br><b>%{y:,}</b> programas<extra></extra>'
     }], {
@@ -810,14 +737,11 @@ document.getElementById('k-mod-sub').textContent = 'acumulado: ' + fmt(D.kpis.mo
       plot_bgcolor: 'white', paper_bgcolor: 'white', hovermode: 'x'
     }, {responsive: true, displayModeBar: false});
   });
-})();
-
-function _emptyChart(el, msg) {
-  if (!el) return;
-  el.innerHTML='<div style="display:flex;align-items:center;justify-content:center;height:100%;color:#64748b;font-size:.82rem">'+(msg||'Sin datos')+'</div>';
 }
 
-(function() {
+function renderFlujo() {
+  const nue = rows.nue.filter(passesGlobalFilter);
+  const ina = rows.ina.filter(passesGlobalFilter);
   const porSem = {};
   const runsPorSem = {};
   const trackRun = (r, key) => {
@@ -826,10 +750,11 @@ function _emptyChart(el, msg) {
     (runsPorSem[s] = runsPorSem[s] || new Set()).add(r['FECHA_OBTENCION']);
     return s;
   };
-  (D.nuevos || []).forEach(r => trackRun(r, 'nuevos'));
-  (D.inactivos || []).forEach(r => trackRun(r, 'inactivos'));
+  nue.forEach(r => trackRun(r, 'nuevos'));
+  ina.forEach(r => trackRun(r, 'inactivos'));
   const sems = Object.keys(porSem).sort();
-  if (!sems.length) { _emptyChart(document.getElementById('ch-flujo')); return; }
+  const noteEl = document.getElementById('flujo-note');
+  if (!sems.length) { _emptyChart(document.getElementById('ch-flujo')); if (noteEl) noteEl.textContent = ''; return; }
   const aperturas = sems.map(s => porSem[s].nuevos);
   const cierres = sems.map(s => -porSem[s].inactivos);
   const netos = sems.map((s, i) => aperturas[i] + cierres[i]);
@@ -866,7 +791,6 @@ function _emptyChart(el, msg) {
     } : null).filter(Boolean)
   }, {responsive: true, displayModeBar: false});
 
-  const noteEl = document.getElementById('flujo-note');
   if (noteEl) {
     const flagged = sems.filter((s, i) => incompletos[i]);
     noteEl.textContent = flagged.length
@@ -874,7 +798,7 @@ function _emptyChart(el, msg) {
         UMBRAL_RUNS + ' corridas), asi que las cifras no son comparables 1:1 con los demas periodos.'
       : '';
   }
-})();
+}
 
 let periodosFiltro = null;
 const _snapAll = D.snapshot || [];
@@ -910,34 +834,10 @@ function _buildSnapTbl(data) {
   return h + '</tbody></table>';
 }
 
-addOpts('snap-sector',    uniq(_snapAll.map(r => r['SECTOR'])));
-addOpts('snap-depto',     uniq(_snapAll.map(r => r['DEPARTAMENTO_OFERTA_PROGRAMA'])));
-addOpts('snap-modalidad', uniq(_snapAll.map(r => r['MODALIDAD'])));
-
 function filterSnap() {
-  const qTokens = _norm(gv('snap-search')).split(/\\s+/).filter(Boolean);
-  const insTokens = _norm(gv('snap-institucion')).split(/\\s+/).filter(Boolean);
-  const se = gv('snap-sector'), de = gv('snap-depto'), mo = gv('snap-modalidad');
-  const res = _snapAll.filter(r => {
-    if (!_matchesPeriodo(r['NÚMERO_PERIODOS_DE_DURACIÓN'], periodosFiltro)) return false;
-    if (!_rowMatches(r, qTokens)) return false;
-    if (insTokens.length) {
-      const hayIns = _norm(r['NOMBRE_INSTITUCIÓN']);
-      if (!insTokens.every(t => hayIns.includes(t))) return false;
-    }
-    if (se && r['SECTOR'] !== se) return false;
-    if (de && r['DEPARTAMENTO_OFERTA_PROGRAMA'] !== de) return false;
-    if (mo && r['MODALIDAD'] !== mo) return false;
-    return true;
-  });
+  const res = _snapAll.filter(r =>
+    _matchesPeriodo(r['NÚMERO_PERIODOS_DE_DURACIÓN'], periodosFiltro) && passesGlobalFilter(r));
   document.getElementById('snap-tbl').innerHTML = _buildSnapTbl(res);
-}
-
-function resetSnapFilters() {
-  ['snap-search','snap-institucion','snap-sector','snap-depto','snap-modalidad'].forEach(id => {
-    const el = document.getElementById(id); if (el) el.value = '';
-  });
-  filterSnap();
 }
 
 function _updateChipStyles() {
@@ -954,14 +854,12 @@ function setPeriodosFilter(val) {
   val = String(val);
   if (periodosFiltro === val) { clearPeriodosFilter(); return; }
   periodosFiltro = val;
-  const matching = _snapAll.filter(r => _matchesPeriodo(r['NÚMERO_PERIODOS_DE_DURACIÓN'], val));
+  const matching = _snapAll.filter(r =>
+    _matchesPeriodo(r['NÚMERO_PERIODOS_DE_DURACIÓN'], val) && passesGlobalFilter(r));
   const label = _periodoLabel(val) + ' — ' + matching.length.toLocaleString('es-CO') + ' programas activos';
   document.getElementById('periodos-chip').style.display = 'flex';
   document.getElementById('periodos-chip-val').textContent = label;
   document.getElementById('snap-title').textContent = label;
-  ['snap-search','snap-institucion','snap-sector','snap-depto','snap-modalidad'].forEach(id => {
-    const el = document.getElementById(id); if (el) el.value = '';
-  });
   filterSnap();
   document.getElementById('snap-section').style.display = 'block';
   _updateChipStyles();
@@ -990,44 +888,29 @@ const HEAD = {
   DEPARTAMENTO_OFERTA_PROGRAMA:'Dpto.', 'DIVISIÓN UNINORTE':'División',
   QUE_CAMBIO:'¿Qué cambió?'
 };
-const rows = {nue: D.nuevos, ina: D.inactivos, mod: D.modificados};
+const rows = {nue: D.nuevos || [], ina: D.inactivos || [], mod: D.modificados || []};
 let filteredRows = {nue: rows.nue, ina: rows.ina, mod: rows.mod};
 let sortDir = {};
 
-const FILTROS_TIPO = {
-  nue: ['se','de','di','mo','fe','ci'],
-  ina: ['se','de','di','mo','fe','ci'],
-  mod: ['se','de','di','fe','tc'],
-};
+// ── Filtro global (búsqueda + sector + departamento + modalidad) ─────────────
+// La modalidad usa el mismo agrupamiento top6+Otras que las mini-tarjetas de
+// evolución, así un mismo valor significa lo mismo en toda la página.
+const MODALIDADES_TOP = ((D.historico_modalidad || {}).series || []).map(s => s.name);
+const MODALIDADES_TOP_SET = new Set(MODALIDADES_TOP.filter(n => n !== 'Otras'));
+function bucketModalidad(m) { return MODALIDADES_TOP_SET.has(m) ? m : 'Otras'; }
 
-const INSTITUCIONES_TODAS = uniq([
-  ..._snapAll.map(r => r['NOMBRE_INSTITUCIÓN']),
-  ...rows.nue.map(r => r['NOMBRE_INSTITUCIÓN']),
-  ...rows.ina.map(r => r['NOMBRE_INSTITUCIÓN']),
-  ...rows.mod.map(r => r['NOMBRE_INSTITUCIÓN']),
-]);
-initAutocomplete('snap-institucion', 'snap-institucion-menu', INSTITUCIONES_TODAS, filterSnap);
-initAutocomplete('ins-nue', 'ins-nue-menu', INSTITUCIONES_TODAS, () => filter('nue'));
-initAutocomplete('ins-ina', 'ins-ina-menu', INSTITUCIONES_TODAS, () => filter('ina'));
-initAutocomplete('ins-mod', 'ins-mod-menu', INSTITUCIONES_TODAS, () => filter('mod'));
-
-['nue','ina'].forEach(t => {
-  addOpts('se-'+t, uniq(rows[t].map(r => r['SECTOR'])));
-  addOpts('de-'+t, uniq(rows[t].map(r => r['DEPARTAMENTO_OFERTA_PROGRAMA'])));
-  addOpts('di-'+t, uniq(rows[t].map(r => r['DIVISIÓN UNINORTE'])));
-  addOpts('mo-'+t, uniq(rows[t].map(r => r['MODALIDAD'])));
-  addOpts('fe-'+t, uniq(rows[t].map(r => r['FECHA_OBTENCION'])).sort((a,b) => parseFecha(b)-parseFecha(a)));
-  addOpts('ci-'+t, uniq(rows[t].map(r => (r['CINE_F_2013_AC_CAMPO_ESPECÍFIC']||'').trim())));
-});
-addOpts('se-mod', uniq(rows.mod.map(r => r['SECTOR'])));
-addOpts('de-mod', uniq(rows.mod.map(r => r['DEPARTAMENTO_OFERTA_PROGRAMA'])));
-addOpts('di-mod', uniq(rows.mod.map(r => r['DIVISIÓN UNINORTE'])));
-addOpts('fe-mod', uniq(rows.mod.map(r => r['FECHA_OBTENCION'])).sort((a,b) => parseFecha(b)-parseFecha(a)));
-{
-  const cs = new Set();
-  rows.mod.forEach(r => { (r['QUE_CAMBIO']||'').split(' | ').forEach(p => { const f=p.split(':')[0].trim(); if(f&&f!=='nan'&&f!=='') cs.add(f); }); });
-  addOpts('tc-mod', [...cs].sort());
+let FILTRO = {qTokens: [], sector: '', depto: '', modalidad: ''};
+function passesGlobalFilter(r) {
+  if (!_rowMatches(r, FILTRO.qTokens)) return false;
+  if (FILTRO.sector && r['SECTOR'] !== FILTRO.sector) return false;
+  if (FILTRO.depto && r['DEPARTAMENTO_OFERTA_PROGRAMA'] !== FILTRO.depto) return false;
+  if (FILTRO.modalidad && bucketModalidad(r['MODALIDAD']) !== FILTRO.modalidad) return false;
+  return true;
 }
+
+addOpts('gf-sector', uniq([..._snapAll, ...rows.nue, ...rows.ina, ...rows.mod].map(r => r['SECTOR'])));
+addOpts('gf-depto', uniq([..._snapAll, ...rows.nue, ...rows.ina, ...rows.mod].map(r => r['DEPARTAMENTO_OFERTA_PROGRAMA'])));
+addOpts('gf-modalidad', MODALIDADES_TOP);
 
 function buildTbl(type, data) {
   const cols = COLS[type].filter(c => !data.length || c in data[0]);
@@ -1050,47 +933,11 @@ function render(type, data) {
   document.getElementById('tw-' + type).innerHTML = buildTbl(type, data);
 }
 
-['nue','ina','mod'].forEach(t => {
-  render(t, rows[t]);
-  document.getElementById('bn-' + t).textContent = rows[t].length;
-});
-
 function tab(id, btn) {
   document.querySelectorAll('.tab-pane').forEach(el => el.classList.remove('on'));
   document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('on'));
   document.getElementById('tp-' + id).classList.add('on');
   btn.classList.add('on');
-}
-
-function filter(type) {
-  const qTokens = _norm(gv('q-'+type)).split(/\\s+/).filter(Boolean);
-  const insTokens = _norm(gv('ins-'+type)).split(/\\s+/).filter(Boolean);
-  const se = gv('se-'+type), de = gv('de-'+type), di = gv('di-'+type);
-  const mo = gv('mo-'+type), fe = gv('fe-'+type), ci = gv('ci-'+type), tc = gv('tc-'+type);
-
-  const res = rows[type].filter(r => {
-    if (!_rowMatches(r, qTokens)) return false;
-    if (insTokens.length) {
-      const hayIns = _norm(r['NOMBRE_INSTITUCIÓN']);
-      if (!insTokens.every(t => hayIns.includes(t))) return false;
-    }
-    if (se && r['SECTOR'] !== se) return false;
-    if (de && r['DEPARTAMENTO_OFERTA_PROGRAMA'] !== de) return false;
-    if (di && r['DIVISIÓN UNINORTE'] !== di) return false;
-    if (mo && r['MODALIDAD'] !== mo) return false;
-    if (fe && r['FECHA_OBTENCION'] !== fe) return false;
-    if (ci && (r['CINE_F_2013_AC_CAMPO_ESPECÍFIC']||'').trim() !== ci) return false;
-    if (tc && !(r['QUE_CAMBIO']||'').includes(tc)) return false;
-    return true;
-  });
-  filteredRows[type] = res;
-  render(type, res);
-}
-
-function resetTblFilters(type) {
-  (FILTROS_TIPO[type]||[]).forEach(p => { const el = document.getElementById(p+'-'+type); if (el) el.value=''; });
-  ['q-'+type, 'ins-'+type].forEach(id => { const el = document.getElementById(id); if (el) el.value=''; });
-  filter(type);
 }
 
 function sortTbl(type, col) {
@@ -1102,6 +949,50 @@ function sortTbl(type, col) {
   });
   render(type, filteredRows[type]);
 }
+
+function applyGlobalFilter() {
+  FILTRO = {
+    qTokens: _norm(gv('gf-q')).split(/\\s+/).filter(Boolean),
+    sector: gv('gf-sector'),
+    depto: gv('gf-depto'),
+    modalidad: gv('gf-modalidad'),
+  };
+
+  ['nue','ina','mod'].forEach(t => {
+    filteredRows[t] = rows[t].filter(passesGlobalFilter);
+    sortDir = {};
+    render(t, filteredRows[t]);
+    document.getElementById('bn-' + t).textContent = filteredRows[t].length;
+  });
+
+  const filteredSnapshot = _snapAll.filter(passesGlobalFilter);
+  renderSector(filteredSnapshot);
+  renderDepto(filteredSnapshot);
+  renderPeriodos(filteredSnapshot);
+  renderFlujo();
+  const agg = _historicoAgregado();
+  renderHistorico(agg);
+  renderModalidadMini(agg);
+
+  const activo = FILTRO.qTokens.length || FILTRO.sector || FILTRO.depto || FILTRO.modalidad;
+  const gc = document.getElementById('gf-count');
+  if (gc) {
+    gc.textContent = activo
+      ? fmt(filteredSnapshot.length) + ' de ' + fmt(_snapAll.length) + ' programas activos'
+      : fmt(_snapAll.length) + ' programas activos';
+  }
+
+  if (periodosFiltro !== null) filterSnap();
+}
+
+function resetGlobalFilter() {
+  ['gf-q','gf-sector','gf-depto','gf-modalidad'].forEach(id => {
+    const el = document.getElementById(id); if (el) el.value = '';
+  });
+  applyGlobalFilter();
+}
+
+applyGlobalFilter();
 </script>
 </body>
 </html>
@@ -2883,44 +2774,12 @@ def build_index(historico, nuevos_df, inactivos_df, mods_df, snapshot_df):
         "mods_total":       len(mods_df),
     }
 
-    por_depto_mapa = []
-    dist_depto = _distribucion(snapshot_df, "DEPARTAMENTO_OFERTA_PROGRAMA", top_n=100)
-    total_snap = len(snapshot_df) if not snapshot_df.empty else 0
-    for d in dist_depto:
-        geo_name = DEPTO_GEO_MAP.get(d["label"])
-        if not geo_name:
-            continue
-        por_depto_mapa.append({
-            "depto": geo_name,
-            "total": d["value"],
-            "pct": round(100 * d["value"] / total_snap, 1) if total_snap else 0,
-        })
-
-    por_periodos_stacked = {"labels": [], "series": []}
-    if not snapshot_df.empty and "NÚMERO_PERIODOS_DE_DURACIÓN" in snapshot_df.columns:
-        df_p = snapshot_df.copy()
-        df_p["_periodo"] = pd.to_numeric(df_p["NÚMERO_PERIODOS_DE_DURACIÓN"], errors="coerce")
-        df_p = df_p.dropna(subset=["_periodo"])
-        df_p["_periodo"] = df_p["_periodo"].round().astype(int).apply(_bucket_periodo)
-        df_p["_periodicidad"] = df_p.get("PERIODICIDAD", "Sin definir").fillna("Sin definir")
-        pivot = df_p.pivot_table(index="_periodo", columns="_periodicidad",
-                                  aggfunc="size", fill_value=0)
-        labels = sorted(pivot.index.tolist(), key=_periodo_sort_key)
-        series = [{"name": str(col), "values": [int(pivot.loc[l, col]) if l in pivot.index else 0 for l in labels]}
-                  for col in pivot.columns]
-        series.sort(key=lambda s: -sum(s["values"]))
-        por_periodos_stacked = {"labels": labels, "series": series}
-
     data = {
         "ultima_actualizacion": historico[-1]["fecha"] if historico else "N/A",
         "historico":     [{"fecha": h["fecha"], "total": h["total"]} for h in historico],
         "kpis":          kpis,
-        "por_sector":    _distribucion(snapshot_df, "SECTOR"),
-        "por_depto":     _distribucion(snapshot_df, "DEPARTAMENTO_OFERTA_PROGRAMA"),
-        "por_modalidad": _distribucion(snapshot_df, "MODALIDAD"),
-        "por_periodos_stacked": por_periodos_stacked,
-        "historico_modalidad": historico_por_modalidad(historico, top_n=10),
-        "por_depto_mapa": por_depto_mapa,
+        "historico_modalidad": historico_por_modalidad(historico),
+        "historico_cruzado": historico_cruzado(historico),
         "snapshot":      _to_records(snapshot_df, SNAPSHOT_COLS),
         "nuevos":        _to_records(nuevos_df,    COLS_IDX_PREVIEW),
         "inactivos":     _to_records(inactivos_df, COLS_IDX_PREVIEW),
@@ -2931,7 +2790,6 @@ def build_index(historico, nuevos_df, inactivos_df, mods_df, snapshot_df):
     }
 
     html = INDEX_TEMPLATE.replace("__PLOTLY_CDN__", PLOTLY_CDN)
-    html = html.replace("__GEO_URL__", GEO_URL)
     html = html.replace("__DATA__", _dumps(data))
     return html
 
