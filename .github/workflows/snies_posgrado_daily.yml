@@ -2,9 +2,9 @@ name: SNIES Posgrado Report
 
 on:
   schedule:
-    # Corre el primer día hábil de cada mes a las 11:00 UTC (6 AM Colombia)
-    # Ajusta el cron según la frecuencia deseada (diario, semanal, mensual)
-    - cron: '0 11 * * 1'
+    - cron: '7 13 * * 2'   # 08:07 hora Colombia (UTC-5), martes — minuto "raro" a propósito:
+                            # GitHub retrasa/salta con más frecuencia los cron en punto (:00),
+                            # por la congestión de miles de workflows disparando a la vez.
   workflow_dispatch:
 
 jobs:

@@ -42,7 +42,7 @@ def _tabla_html(df: pd.DataFrame | None, color_header: str) -> str:
         "NOMBRE_DEL_PROGRAMA",
         "NOMBRE_INSTITUCIÓN",
         "NIVEL_DE_FORMACIÓN",
-        "MUNICIPIO_OFERTA_PROGRAMA",
+        "DEPARTAMENTO_OFERTA_PROGRAMA",
         "DIVISIÓN UNINORTE",
         "QUE_CAMBIO",
     ]
