@@ -1,11 +1,15 @@
 name: SNIES Posgrado Report
 
+# La ejecución semanal NO se programa aquí con `schedule`: GitHub retrasa o salta
+# los cron cuando hay mucha carga. En su lugar, un job en cron-job.org llama a la
+# API de GitHub (POST .../actions/workflows/snies_posgrado_daily.yml/dispatches)
+# todos los jueves a las 8:00 a.m. hora Colombia, y eso dispara este workflow.
+# También se puede correr a mano desde la pestaña Actions → "Run workflow".
 on:
-  schedule:
-    - cron: '7 13 * * 2'   # 08:07 hora Colombia (UTC-5), martes — minuto "raro" a propósito:
-                            # GitHub retrasa/salta con más frecuencia los cron en punto (:00),
-                            # por la congestión de miles de workflows disparando a la vez.
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   run-snies-posgrado:
@@ -14,34 +18,73 @@ jobs:
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
+    defaults:
+      run:
+        shell: bash
+
     steps:
-      - name: Checkout
+      - name: Checkout del repositorio
         uses: actions/checkout@v4
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+          persist-credentials: true
 
-      - name: Instalar Chrome
+      - name: Información de ejecución
         run: |
-          wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | sudo apt-key add -
-          echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" | sudo tee /etc/apt/sources.list.d/google-chrome.list
-          sudo apt-get update -q
-          sudo apt-get install -y google-chrome-stable
+          set -euo pipefail
 
-      - name: Setup Python
+          echo "========================================"
+          echo "Runner:"
+          hostname
+
+          echo
+          echo "Sistema:"
+          uname -a
+
+          echo
+          echo "Hora UTC:"
+          date -u
+
+          echo
+          echo "Hora Colombia:"
+          TZ=America/Bogota date
+
+          echo
+          echo "Repositorio:"
+          echo "$GITHUB_REPOSITORY"
+
+          echo "========================================"
+
+      # Instalación oficial de Google Chrome
+      - name: Configurar Google Chrome
+        uses: browser-actions/setup-chrome@v1
+
+      - name: Verificar Chrome
+        run: |
+          google-chrome --version
+
+      - name: Configurar Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
-          cache: 'pip'
+          python-version: "3.11"
+          cache: pip
 
       - name: Instalar dependencias
-        run: pip install -r requirements.txt
+        run: |
+          set -euo pipefail
+
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
 
       - name: Ejecutar pipeline posgrado
         env:
           SMTP_USER: ${{ secrets.SMTP_USER }}
           SMTP_PASS: ${{ secrets.SMTP_PASS }}
           DESTINATARIOS: ${{ secrets.DESTINATARIOS }}
-        run: python scripts/run_snies_posgrado.py
+        run: |
+          set -euo pipefail
+
+          python scripts/run_snies_posgrado.py
 
       - name: Subir screenshots de debug
         if: always()
@@ -53,16 +96,26 @@ jobs:
 
       - name: Commitear datos
         run: |
+          set -euo pipefail
+
           git config user.name "snies-bot"
           git config user.email "snies-bot@uninorte.edu.co"
+
           git add data/ "Programas/"
           git diff --staged --quiet || git commit -m "snies-posgrado: $(date +'%Y-%m-%d')"
 
       - name: Generar dashboard
-        run: python docs/generar_dashboard.py
+        run: |
+          set -euo pipefail
+
+          python docs/generar_dashboard.py
 
       - name: Commitear dashboard y publicar
         run: |
+          set -euo pipefail
+
           git add docs/
           git diff --staged --quiet || git commit -m "dashboard: $(date +'%Y-%m-%d')"
-          git push
+
+          # Cambia "main" si tu rama principal tiene otro nombre.
+          git push origin HEAD:main
