@@ -29,6 +29,8 @@ NOVEDADES_DIR = ROOT / "data" / "novedades"
 SMTP_HOST = "smtp.gmail.com"
 SMTP_PORT = 587
 
+DASHBOARD_URL = "https://dirplaneacionun.github.io/snies_monitor_posgrado/"
+
 # ── HTML helpers ──────────────────────────────────────────────────────────────
 
 def _tabla_html(df: pd.DataFrame | None, color_header: str) -> str:
@@ -38,10 +40,14 @@ def _tabla_html(df: pd.DataFrame | None, color_header: str) -> str:
             "Sin novedades este día.</p>"
         )
 
+    # MODALIDAD aplica a las tres tablas (nuevos, inactivos y modificados). En
+    # modificados, run_snies_posgrado.detectar_novedades deja en "MODALIDAD" el
+    # valor actual (última modalidad registrada) y el previo en "MODALIDAD_ANTERIOR".
     candidatas = [
         "NOMBRE_DEL_PROGRAMA",
         "NOMBRE_INSTITUCIÓN",
         "NIVEL_DE_FORMACIÓN",
+        "MODALIDAD",
         "DEPARTAMENTO_OFERTA_PROGRAMA",
         "DIVISIÓN UNINORTE",
         "QUE_CAMBIO",
@@ -132,6 +138,18 @@ Reporte Mensual SNIES — Posgrado — {today_str}
 Monitoreo de programas académicos de posgrado en Colombia.
 Los archivos Excel completos van adjuntos a este correo.
 </p>
+<div style="text-align:center;margin:24px 0;">
+<a href="{DASHBOARD_URL}"
+style="display:inline-block;background-color:#1e40af;color:#ffffff;
+font-family:Arial,sans-serif;font-size:15px;font-weight:bold;
+text-decoration:none;padding:14px 36px;border-radius:8px;
+letter-spacing:0.03em;">
+📊 Ver Dashboard Completo
+</a>
+<p style="font-size:11px;color:#888;margin-top:8px;font-family:Arial,sans-serif;">
+Gráficos interactivos · Historial · Tablas con filtros
+</p>
+</div>
 {_bloque_posgrado(resultados.get("posgrado"))}
 <p style="background-color:#f8f9fa;padding:12px;
 border-left:5px solid #003893;font-size:11px;color:#555;">
